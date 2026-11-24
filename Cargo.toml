@@ -1,0 +1,30 @@
+[package]
+name = "convo-safe"
+version = "0.1.0"
+edition = "2024"
+description = "Reversible prompt redaction backed by a local encrypted Keybox"
+repository = "https://github.com/talos-hq/redact"
+
+[lib]
+name = "convo_safe"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = ["server"]
+server = ["dep:serde_json"]
+python = ["dep:pyo3"]
+
+[[bin]]
+name = "convo-safe"
+path = "src/bin/server.rs"
+required-features = ["server"]
+
+[dependencies]
+blake3 = "1.8"
+chacha20poly1305 = "0.10"
+pyo3 = { version = "0.26", features = ["abi3-py310"], optional = true }
+regex = "1.11"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", optional = true }
+zeroize = "1.8"

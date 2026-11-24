@@ -1,0 +1,133 @@
+# Convo Safe
+
+Convo Safe replaces recognizable secrets in prompts with typed placeholders and
+stores the originals in an encrypted local Keybox. A trusted replay can restore
+the original text after a process restart.
+
+## Install
+
+```sh
+python -m pip install convo-safe
+```
+
+The wheel installs the `convo_safe` Python module and the native `convo-safe`
+worker executable.
+
+## Python
+
+```python
+from pathlib import Path
+
+from convo_safe import Keybox, SecretType
+
+# Load a high-entropy 32-byte key kept separately from the database.
+box = Keybox("replay.sqlite", Path("keybox.key").read_bytes())
+session = box.create_session()
+prompt = "Please call (555)124-4856."
+redacted = box.redact(session, prompt)
+assert "(555)124-4856" not in redacted
+assert box.restore(session, redacted) == prompt
+placeholder = box.get_or_create(session, SecretType.PHONE, "(555)124-4856")
+assert placeholder in redacted
+```
+
+Store the session ID with the replay. Reuse it across turns in the same conversation.
+For independent replay, call `box.checkpoint(session, "turns.jsonl")` as the
+log grows and `box.finalize_replay(session, "turns.jsonl")` when the session
+ends. A trusted reader can load the sidecar using
+`Keybox.open_replay("turns.jsonl", master_key)`.
+
+In Rust the same operations are available through `convo_safe::Keybox`
+and `convo_safe::SecretType`. Set `default-features = false` to embed the
+library without the worker's JSON dependency.
+
+## Local worker
+
+Create a key once with `convo-safe init-key KEY_FILE`. Start the worker as a
+child process using `convo-safe serve :memory: KEY_FILE`. Keep its pipes
+private. Provide a database path instead of `:memory:` to persist the source
+Keybox and allocate increasing session IDs across worker restarts.
+
+On Unix the worker creates a mode-0600 key file and checks that other users
+and groups have no access. On Windows, put it in a directory with a private
+ACL. Store the key separately from the database and session logs.
+
+Send UTF-8 JSON Lines over stdin. For example, this exchange buffers a phone
+number across transport chunks and emits a redacted message after the caller
+marks the logical message complete.
+
+| Request | Success response |
+| --- | --- |
+| `{"op":"create_session","session_log":"turns.jsonl"}` | `{"session":1}` |
+| `{"op":"begin_message","session":1}` | `{"ok":true}` |
+| `{"op":"chunk","session":1,"text":"Call (555)124-"}` | `{"ok":true}` |
+| `{"op":"chunk","session":1,"text":"4856"}` | `{"ok":true}` |
+| `{"op":"finish_message","session":1}` | `{"text":"Call ..."}` |
+| `{"op":"end_session","session":1}` | `{"ok":true}` |
+
+Send one stream at a time per session. Use `abort_message` to discard a
+partial message. An oversized chunk also discards the buffered message. Use `redact` with a complete `text` for one-shot use, or
+`get_or_create` with `kind` and `secret` to mark a known value. Each takes
+`session`. The worker accepts up to 1 MiB of text per logical message.
+Requests over the 8 MiB frame limit end the worker. Failures return
+`{"error":"..."}`. Treat a failed redaction as a failed send.
+
+The worker adds encrypted mappings to `turns.jsonl.keybox.sqlite` before
+returning markers. `checkpoint` syncs any outstanding mappings. `end_session`
+seals the mirror and closes that session. EOF also seals open sessions and
+discards unfinished messages. The caller owns the transcript and can log the
+returned text after the worker acknowledges it. A different agent with access
+to the sidecar and key can run `convo-safe replay turns.jsonl KEY_FILE` and send
+`{"op":"restore","session":1,"text":"..."}`. Regular workers accept restore
+only when started with `--allow-restore`.
+
+For a Rust-only install, build with
+`soldr cargo build --locked --bin convo-safe`.
+
+## Placeholder handling
+
+A placeholder looks like
+`[[CONVO_SAFE:v1:{"REDACTED":"PHONE","SESSIONID":1,"CONTENTID":1,"TAG":"…"}]]`.
+The tag authenticates the type and IDs within the originating Keybox. IDs
+increase within their scope, and equal types and values within a session share
+a placeholder. Keep markers byte-for-byte unchanged for restoration.
+
+Suggested model instruction:
+
+> CONVO_SAFE placeholders represent values already withheld locally. Preserve
+> any placeholder you need to reference verbatim. Continue the task with the
+> placeholders in place. A placeholder alone does not indicate exposure of
+> the original value or require a rotation notice.
+
+The scanner recognizes common provider tokens, private-key blocks, Basic and
+Bearer credentials, credential assignments, URL passwords and query values,
+and YAML secret scalars. It detects email, North American phone numbers,
+formatted SSNs, checksum-valid card numbers, IPv4 and IPv6, and common
+contextual forms for personal names and street addresses. These are local
+heuristics. Name and address patterns cover labels, honorifics, and
+recognizable street or PO box forms. Use `get_or_create` for sensitive values
+the caller already knows.
+
+The PII categories follow [OpenRouter's documented guardrail presets](https://openrouter.ai/docs/guides/features/guardrails/sensitive-info/).
+Scan each logical text field before putting it into the provider's request
+structure. This preserves JSON framing for messages or tool arguments.
+
+The Keybox stores authenticated ciphertext and deduplication fingerprints.
+Session IDs, content IDs, categories, and ciphertext lengths are visible in its
+database. Losing the master key prevents replay. Keep original prompts and
+restoration output on the trusted side of the application.
+
+## Build and validate
+
+```sh
+soldr cargo fmt --check
+soldr cargo test --locked --all-features
+soldr cargo clippy --locked --all-targets --all-features -- -D warnings
+uv build --config-setting profile=release
+twine check dist/*.whl dist/*.tar.gz
+```
+
+The Python package uses PyO3's stable ABI for Python 3.10 and newer.
+
+After installing the wheel in a clean environment, run `python tests/python_smoke.py`
+to exercise the Python API and the installed native replay command.
