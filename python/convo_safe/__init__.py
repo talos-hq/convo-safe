@@ -1,0 +1,23 @@
+"""Local reversible prompt redaction."""
+
+from enum import Enum
+
+from ._native import Keybox
+
+
+class SecretType(str, Enum):
+    """Secret categories accepted by Keybox.get_or_create."""
+
+    PHONE = "PHONE"
+    CREDENTIAL = "CREDENTIAL"
+    PRIVATE_KEY = "PRIVATE_KEY"
+    BEARER = "BEARER"
+    EMAIL = "EMAIL"
+    SSN = "SSN"
+    CREDIT_CARD = "CREDIT_CARD"
+    IP_ADDRESS = "IP_ADDRESS"
+    PERSON_NAME = "PERSON_NAME"
+    ADDRESS = "ADDRESS"
+
+
+__all__ = ["Keybox", "SecretType"]
