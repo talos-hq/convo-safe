@@ -100,6 +100,7 @@ def resume_child(db):
     marker = parent.removeprefix(PREFIX)
     assert marker in history[0]["content"] and EMAIL not in history[0]["content"]
     box = session_request_keybox(db, "child")
+    assert box.restore_strict(box.replay_session, parent, 2**21) == PREFIX + PASSWORD
     assert box.restore_strict(box.replay_session, history[0]["content"], 2048) == (
         f"Remember {PASSWORD}; reply to {EMAIL}"
     )
