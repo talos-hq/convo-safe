@@ -2,11 +2,14 @@
 name = "convo-safe"
 version = "0.1.0"
 edition = "2024"
+autobins = false
 description = "Reversible prompt redaction backed by a local encrypted Keybox"
 repository = "https://github.com/talos-hq/convo-safe"
 license-file = "LICENSE"
+publish = false
 
 [lib]
+test = false
 name = "convo_safe"
 crate-type = ["rlib", "cdylib"]
 
@@ -16,8 +19,9 @@ server = ["dep:serde_json"]
 python = ["dep:pyo3"]
 
 [[bin]]
+test = false
 name = "convo-safe"
-path = "src/bin/server.rs"
+path = "src/bin/convo-safe.rs"
 required-features = ["server"]
 
 [dependencies]
@@ -29,3 +33,16 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }
 zeroize = "1.8"
+
+[workspace.metadata.soldr]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[lints]
+workspace = true
+
+[workspace.lints.clippy]
+cognitive_complexity = "warn"
+too_many_lines = "warn"
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+await_holding_invalid_type = "deny"

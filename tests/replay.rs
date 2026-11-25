@@ -156,6 +156,10 @@ fn deduplicates_across_independent_concurrent_connections() {
 
 #[cfg(feature = "server")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One process round trip covers streaming limits and replay isolation"
+)]
 fn worker_isolates_restore_and_speaks_json_lines() {
     use serde_json::{Value, json};
     use std::{

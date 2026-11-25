@@ -6,7 +6,7 @@ use std::{
     collections::HashMap,
     env,
     ffi::OsString,
-    fs::{File, OpenOptions},
+    fs::File,
     io::{self, BufRead, Read, Write},
     path::{Path, PathBuf},
     process::ExitCode,
@@ -88,6 +88,10 @@ enum Mode {
 }
 
 impl Worker {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep worker request dispatch and state transitions together"
+    )]
     fn handle(&mut self, request: &Request) -> Result<Value, String> {
         if let Request::Restore { session, text } = request {
             return if self.mode == Mode::Redact {
@@ -305,15 +309,7 @@ fn create_key(path: &Path) -> Result<(), &'static str> {
     OsRng
         .try_fill_bytes(&mut *key)
         .map_err(|_| "system randomness unavailable")?;
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options
-        .open(path)
+    convo_safe::platform::create_private(path)
         .and_then(|mut file| {
             file.write_all(&*key)?;
             file.sync_all()
@@ -329,12 +325,8 @@ fn read_key(path: &Path) -> Result<Zeroizing<[u8; 32]>, &'static str> {
     if !metadata.is_file() || metadata.len() != 32 {
         return Err("Keybox key file must be a regular file containing 32 raw bytes");
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err("Keybox key file must be private (mode 0600)");
-        }
+    if !convo_safe::platform::has_private_permissions(&metadata) {
+        return Err("Keybox key file must be private (mode 0600)");
     }
     let mut key = Zeroizing::new([0u8; 32]);
     file.read_exact(&mut *key)
