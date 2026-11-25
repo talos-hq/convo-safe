@@ -128,8 +128,11 @@ restart. Inspect the saved redacted records using ordinary analysis tools.
 
 For a filesystem backup, stop the profile's gateway and other writers and
 copy the closed profile as a unit. Preserve `state.db`, the entire
-`protected-transcripts/` directory and any transcript or retry-spool
-artifacts. Retain the master key separately from the backup and restore it
+`protected-transcripts/` directory, and all transcript and retry-spool
+artifacts. If present, include the hidden `.shutdown-spool-owner` file with
+`pending_messages/`. Hermes uses the owner file and the profile master key
+to authenticate sealed queue records. Keep the owner file with its profile
+when relocating a backup. Retain the master key separately and restore it
 through secret configuration. If the profile contains a file with the master
 key, exclude that file from the backup and record how the restore operator
 will retrieve the key. Use a new profile directory for the restore drill and
