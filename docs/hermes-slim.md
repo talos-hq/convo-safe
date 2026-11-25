@@ -103,3 +103,21 @@ plugin and add only the enforcement and persistence contracts to Hermes core.
 Convo Safe's native and installed-wheel tests exercise strict replay, writable
 resume, sealed forks, branch isolation and a long synthetic compression
 round trip. Hermes-side instrumentation is the next integration phase.
+
+## Cross-repository persistence check
+
+From the Convo Safe checkout, use an existing Hermes Slim development Python
+environment with the Hermes dependencies installed. Install the Convo Safe
+wheel into a separate target directory for the check.
+
+```bash
+soldr wheel --target x86_64-unknown-linux-gnu -- --locked --out target/hermes-wheel
+uv pip install --target target/hermes-wheel-site target/hermes-wheel/*.whl
+PYTHONPATH="$PWD/target/hermes-wheel-site:/absolute/path/to/hermes-slim" \
+  /absolute/path/to/hermes-slim/.venv/bin/python tests/hermes_replay.py
+```
+
+The check uses a disposable Hermes profile. Three processes write a 1 MiB
+redacted record, publish a real `SessionDB` compression child, and reopen it.
+It supplies projected records directly so it can verify SQLite retention and
+resume independently of provider calls and the future runtime projector.
