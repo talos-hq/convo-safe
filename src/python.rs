@@ -58,6 +58,11 @@ impl PythonKeybox {
         self.0.replay_identity()
     }
 
+    #[getter]
+    fn replay_sidecar_id(&self) -> Option<String> {
+        self.0.replay_sidecar_id()
+    }
+
     fn fork_replay(&self, new_log: PathBuf) -> PyResult<()> {
         self.0.fork_replay(new_log).map_err(python_error)
     }

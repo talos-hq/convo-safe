@@ -552,6 +552,11 @@ fn saved_scope_resumes_then_forks_without_rewriting_history() {
     assert_eq!(saved.fork_replay(&child), Err(Error::InvalidMirror));
     let mut a = Keybox::resume_replay(&child, &KEY).unwrap();
     let mut b = Keybox::resume_replay(&sibling, &KEY).unwrap();
+    assert_eq!(a.replay_identity(), b.replay_identity());
+    assert!(a.replay_sidecar_id().is_some());
+    assert_ne!(a.replay_sidecar_id(), b.replay_sidecar_id());
+    assert_ne!(saved.replay_sidecar_id(), a.replay_sidecar_id());
+    assert_eq!(saved.replay_sidecar_id(), resumed.replay_sidecar_id());
     let divergent = a.redact(scope, "password=fixture-child").unwrap();
     let _: String = b.redact(scope, "password=fixture-sibling").unwrap();
     assert_eq!(
@@ -569,6 +574,38 @@ fn saved_scope_resumes_then_forks_without_rewriting_history() {
     assert_eq!(
         b.restore_strict(scope, &inherited, 1024).unwrap(),
         "password=fixture-parent"
+    );
+}
+
+#[test]
+fn sidecar_identity_rejects_tampering_and_allows_legacy_replay() {
+    let scratch = Scratch::new();
+    let log = scratch.0.join("legacy.jsonl");
+    let mut source = Keybox::open(":memory:", &KEY).unwrap();
+    let scope = source.create_session().unwrap();
+    let projected = source.redact(scope, "password=fixture").unwrap();
+    source.checkpoint(scope, &log).unwrap();
+    let db = rusqlite::Connection::open(convo_safe::replay_path(&log).unwrap()).unwrap();
+    db.execute("UPDATE replay_sidecar SET nonce = zeroblob(16)", [])
+        .unwrap();
+    assert!(matches!(
+        Keybox::open_replay(&log, &KEY),
+        Err(Error::InvalidMirror)
+    ));
+    db.execute("DROP TABLE replay_sidecar", []).unwrap();
+    let legacy = Keybox::resume_replay(&log, &KEY).unwrap();
+    assert_eq!(legacy.replay_sidecar_id(), None);
+    assert_eq!(
+        legacy.restore_strict(scope, &projected, 64).unwrap(),
+        "password=fixture"
+    );
+    let child = scratch.0.join("upgraded-child.jsonl");
+    legacy.fork_replay(&child).unwrap();
+    assert!(
+        Keybox::open_replay(&child, &KEY)
+            .unwrap()
+            .replay_sidecar_id()
+            .is_some()
     );
 }
 

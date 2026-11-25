@@ -42,12 +42,18 @@ def compress_parent(root, db):
     )
     assert marker in summary and EMAIL not in summary
     parent.fork_replay(root / "child.jsonl")
+    parent.fork_replay(root / "sibling.jsonl")
     db.publish_compression_child(
         parent_session_id="parent",
         child_session_id="child",
         source="conformance",
         messages=[{"role": "user", "content": summary}],
         compression_lock_holder=holder,
+    )
+    child = Keybox.open_replay(root / "child.jsonl", MASTER)
+    assert child.replay_sidecar_id
+    db.patch_session_model_config(
+        "child", {"replay_sidecar_id": child.replay_sidecar_id}
     )
     parent.seal_replay()
     (root / "expected-summary.txt").write_text(summary, encoding="utf-8")
@@ -60,6 +66,12 @@ def resume_child(root, db):
     child = Keybox.resume_replay(root / "child.jsonl", MASTER)
     scope = child.replay_session
     summary = db.get_messages(tip)[0]["content"]
+    expected_id = db.get_session_model_config_value(tip, "replay_sidecar_id")
+    assert expected_id and child.replay_sidecar_id == expected_id
+    sibling = Keybox.open_replay(root / "sibling.jsonl", MASTER)
+    assert sibling.replay_sidecar_id != expected_id
+    assert sibling.replay_identity == child.replay_identity
+    sibling.validate_references(scope, summary)
     projected = db.get_messages("parent")[0]["content"]
     assert summary == (root / "expected-summary.txt").read_text(encoding="utf-8")
     assert projected == (root / "expected-prefix.txt").read_text(encoding="utf-8")

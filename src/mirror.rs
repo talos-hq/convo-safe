@@ -53,6 +53,41 @@ pub(crate) fn is_finalized(
     Ok(false)
 }
 
+fn sidecar_tag(keys: &Keys, session: SessionId, nonce: [u8; 16]) -> blake3::Hash {
+    let mut tag = blake3::Hasher::new_keyed(&keys.marker);
+    tag.update(b"v1 replay sidecar:");
+    tag.update(&session.to_le_bytes());
+    tag.update(&nonce);
+    tag.finalize()
+}
+
+fn read_sidecar_id(
+    db: &Connection,
+    keys: &Keys,
+    session: SessionId,
+) -> Result<Option<blake3::Hash>> {
+    let exists = db.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'replay_sidecar')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !exists {
+        return Ok(None);
+    }
+    let (nonce, stored) = db
+        .query_row(
+            "SELECT nonce, tag FROM replay_sidecar WHERE id = 1",
+            [],
+            |row| Ok((row.get::<_, [u8; 16]>(0)?, row.get::<_, [u8; 32]>(1)?)),
+        )
+        .map_err(|_| Error::InvalidMirror)?;
+    let tag = sidecar_tag(keys, session, nonce);
+    if tag != blake3::Hash::from_bytes(stored) {
+        return Err(Error::InvalidMirror);
+    }
+    Ok(Some(tag))
+}
+
 pub(crate) fn tail(db: &Connection, session: SessionId) -> Result<i64> {
     Ok(db.query_row(
         "SELECT COALESCE(MAX(content), 0) FROM entries WHERE session = ?",
@@ -104,6 +139,7 @@ impl Keybox {
         // Read the tail and seal from one snapshot, including during a checkpoint.
         let read = db.unchecked_transaction()?;
         let sealed = is_finalized(&read, &keys, session, tail(&read, session)?)?;
+        let replay_sidecar_id = read_sidecar_id(&read, &keys, session)?;
         if writable && sealed {
             return Err(Error::SessionFinalized);
         }
@@ -112,6 +148,7 @@ impl Keybox {
             db,
             keys,
             replay_session: Some(session),
+            replay_sidecar_id,
         })
     }
 
@@ -140,6 +177,12 @@ impl Keybox {
             .to_hex()
             .to_string()
         })
+    }
+
+    /// Authenticated identity of this sidecar, distinct for each fork.
+    /// Sidecars created before this identifier was introduced return `None`.
+    pub fn replay_sidecar_id(&self) -> Option<String> {
+        self.replay_sidecar_id.map(|id| id.to_hex().to_string())
     }
 
     /// Copy a consistent sidecar snapshot to a new log, preserving inherited markers.
@@ -198,11 +241,24 @@ impl Keybox {
             )?;
             dest.execute("INSERT INTO sessions VALUES (?)", [session])?;
             dest.execute("INSERT INTO replay_owner VALUES (1, ?)", [session])?;
+            dest.execute_batch(
+                "CREATE TABLE replay_sidecar (id INTEGER PRIMARY KEY CHECK (id = 1), nonce BLOB NOT NULL, tag BLOB NOT NULL);",
+            )?;
+            let mut nonce = [0; 16];
+            OsRng
+                .try_fill_bytes(&mut nonce)
+                .map_err(|_| Error::Storage)?;
+            let tag = sidecar_tag(&self.keys, session, nonce);
+            dest.execute(
+                "INSERT INTO replay_sidecar VALUES (1, ?, ?)",
+                params![nonce, tag.as_bytes()],
+            )?;
         } else if owner(&dest).map_err(|_| Error::InvalidMirror)? != Some(session)
             || metadata(&dest).map_err(|_| Error::InvalidMirror)? != Some((namespace, verifier))
         {
             return Err(Error::InvalidMirror);
         }
+        read_sidecar_id(&dest, &self.keys, session)?;
 
         let copied = tail(&dest, session)?;
         let latest = tail(&source, session)?;
