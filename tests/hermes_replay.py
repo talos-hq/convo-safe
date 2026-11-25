@@ -51,16 +51,22 @@ def compress_parent(root, db):
     child = Keybox.open_replay(root / "child.jsonl", MASTER)
     binding = replay_binding(child)
     assert_stale_lease_keeps_parent(db, parent, projected, summary, binding)
+    publish_child(db, holder, summary, {"replay_binding": binding})
+    parent.seal_replay()
+    (root / "expected-summary.txt").write_text(summary, encoding="utf-8")
+
+
+def publish_child(db, holder, summary, model_config, *, system_prompt=None):
+    """Commit the test's compression child and binding together."""
     db.publish_compression_child(
         parent_session_id="parent",
         child_session_id="child",
         source="conformance",
         messages=[{"role": "user", "content": summary}],
-        model_config={"replay_binding": binding},
+        model_config=model_config,
+        system_prompt=system_prompt,
         compression_lock_holder=holder,
     )
-    parent.seal_replay()
-    (root / "expected-summary.txt").write_text(summary, encoding="utf-8")
 
 
 def assert_stale_lease_keeps_parent(db, parent, projected, summary, binding):
@@ -125,6 +131,21 @@ def resume_child(root, db):
 PHASES = {"write": write_parent, "compress": compress_parent, "resume": resume_child}
 
 
+def run_isolated_phases(script, phases, *, extra_env=None):
+    """Run each phase in a fresh process with the same disposable profile."""
+    with TemporaryDirectory() as scratch:
+        env = {
+            **os.environ,
+            **(extra_env or {}),
+            "HERMES_HOME": scratch,
+            "HERMES_RUNTIME_DIR": str(Path(scratch, "runtime")),
+        }
+        for phase in phases:
+            subprocess.run(
+                [sys.executable, script, "--phase", phase], env=env, check=True
+            )
+
+
 def main():
     """Exercise write, compaction, and resume in separate interpreters."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -141,17 +162,7 @@ def main():
         finally:
             db.close()
         return
-    with TemporaryDirectory() as scratch:
-        env = {
-            **os.environ,
-            "HERMES_HOME": scratch,
-            "HERMES_RUNTIME_DIR": str(Path(scratch, "runtime")),
-        }
-        script = Path(__file__).resolve()
-        for phase in PHASES:
-            subprocess.run(
-                [sys.executable, script, "--phase", phase], env=env, check=True
-            )
+    run_isolated_phases(Path(__file__).resolve(), PHASES)
     print("Hermes SQLite replay passed across three processes")
 
 

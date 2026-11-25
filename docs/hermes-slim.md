@@ -128,3 +128,10 @@ The check uses a disposable Hermes profile. Three processes write a 1 MiB
 redacted record, publish a real `SessionDB` compression child, and reopen it.
 It supplies projected records directly so it can verify SQLite retention and
 resume independently of provider calls and the future runtime projector.
+
+Against a Hermes checkout that includes the protected runtime integration,
+run `tests/hermes_runtime_replay.py` with the same wheel and `PYTHONPATH`.
+Four fresh processes exercise protected session creation, a 1 MiB transcript
+write, request projection, SQLite compression and resume, and redacted JSONL
+diversion with SQLite offline. The test uses synthetic inputs and a disposable
+profile, and checks that the saved fallback restores byte for byte.

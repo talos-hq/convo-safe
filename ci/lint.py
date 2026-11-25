@@ -49,6 +49,7 @@ def main():
             "python",
             "tests/python_smoke.py",
             "tests/hermes_replay.py",
+            "tests/hermes_runtime_replay.py",
         ],
         check=True,
     )
@@ -66,6 +67,7 @@ def main():
             "python",
             "tests/python_smoke.py",
             "tests/hermes_replay.py",
+            "tests/hermes_runtime_replay.py",
         ],
         check=True,
     )
@@ -81,6 +83,7 @@ def main():
             "python",
             "tests/python_smoke.py",
             "tests/hermes_replay.py",
+            "tests/hermes_runtime_replay.py",
         ],
         check=True,
     )
