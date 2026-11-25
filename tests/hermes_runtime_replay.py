@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Lock
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -153,19 +154,41 @@ def resume_child(db):
     assert PASSWORD not in parent
 
 
-def recover_offline(root):
-    """Exercise the real JSONL diversion once the SQLite database is offline."""
-    from hermes_state import divert_session_transcript_jsonl  # pylint: disable=import-error,import-outside-toplevel
+def divert_after_replacement():
+    """Seed a failed handle's queue and run the gateway's recovery handler."""
+    from gateway.session import SessionStore  # pylint: disable=import-error,import-outside-toplevel
+    from hermes_state_errors import StateDbReplacedError  # pylint: disable=import-error,import-outside-toplevel
 
-    db_path = root / "state.db"
-    db_path.rename(root / "offline-state.db")
-    fallback = divert_session_transcript_jsonl(
-        "child", [{"role": "user", "content": PREFIX + PASSWORD}]
+    store = object.__new__(SessionStore)
+    # Seed the failed handle's in-memory queue without reopening SQLite.
+    store._transcript_retry_lock = Lock()  # pylint: disable=protected-access
+    store._dirty_transcripts = {  # pylint: disable=protected-access
+        "child": [{"role": "user", "content": PREFIX + PASSWORD}]
+    }
+    store._transcript_append_failures = {}  # pylint: disable=protected-access
+    store._divert_transcript_after_db_replaced(  # pylint: disable=protected-access
+        "child", "child", StateDbReplacedError("fixture database replacement")
     )
+    assert not store._dirty_transcripts  # pylint: disable=protected-access
+
+
+def recover_offline(root):
+    """Verify both offline files and drain the spool after SQLite recovers."""
+    from gateway.shutdown_flush import drain_transcript_spool  # pylint: disable=import-error,import-outside-toplevel
+    from hermes_state import SessionDB  # pylint: disable=import-error,import-outside-toplevel
+    from hermes_state_replay import replay_log_path  # pylint: disable=import-error,import-outside-toplevel
+
+    db_path, offline = root / "state.db", root / "offline-state.db"
+    db_path.rename(offline)
+    divert_after_replacement()
+    fallback = replay_log_path(db_path, "child")
     text = fallback.read_text(encoding="utf-8")
     assert PASSWORD not in text
     box = Keybox.open_replay(fallback, MASTER)
     record = json.loads(text)
+    (spooled,) = (root / "pending_messages").glob("pending-*.json")
+    spool = json.loads(spooled.read_text(encoding="utf-8-sig"))
+    assert spool["data"]["message"] == record
     assert (
         box.restore_strict(box.replay_session, record["content"], 2**21)
         == PREFIX + PASSWORD
@@ -174,6 +197,16 @@ def recover_offline(root):
         assert PASSWORD.encode() not in path.read_bytes()
         assert EMAIL.encode() not in path.read_bytes()
         assert SETTLED_EMAIL.encode() not in path.read_bytes()
+    offline.rename(db_path)
+    with SessionDB(db_path=db_path) as db:
+        assert drain_transcript_spool(
+            "child",
+            lambda row: db.append_message("child", row["role"], content=row["content"]),
+        ) == (1, 0)
+        assert (
+            db.get_messages_as_conversation("child")[-1]["content"] == record["content"]
+        )
+    assert not spooled.exists()
 
 
 PHASES = {"write": write_parent, "compress": compress_parent, "resume": resume_child}
