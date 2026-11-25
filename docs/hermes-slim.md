@@ -139,5 +139,8 @@ profile, and checks that the saved fallback restores byte for byte.
 Run `tests/hermes_cli_loopback.py` against a Hermes checkout with the protected
 CLI entry point. It creates and resumes a protected session through the CLI
 and inspects each request sent to a local fixture provider. It uses a separate
-profile and synthetic credentials, and checks that plaintext never appears in
-the fixture's requests or the CLI output.
+profile and synthetic credentials to exercise both successful and rejected
+provider requests. The test checks provider payloads and CLI output for raw
+synthetic addresses, then verifies that the provider error is recorded as a
+marker in the request dump and that profile text diagnostics omit the raw error
+address.

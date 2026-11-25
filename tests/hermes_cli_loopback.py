@@ -11,15 +11,16 @@ from threading import Thread
 
 INPUT_EMAIL = "input@example.org"
 OUTPUT_EMAIL = "echo@example.org"
+ERROR_EMAIL = "failure@example.org"
 MODEL = "fixture-model"
 
 
 class FixtureProvider(BaseHTTPRequestHandler):
     """Capture every request body and return a synthetic assistant reply."""
 
-    def _json(self, response):
+    def _json(self, response, status=200):
         body = json.dumps(response).encode()
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -34,6 +35,17 @@ class FixtureProvider(BaseHTTPRequestHandler):
         self.server.captured.append(
             json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         )
+        if self.server.fail_requests:
+            self._json(
+                {
+                    "error": {
+                        "message": f"Provider echoed {ERROR_EMAIL}",
+                        "type": "invalid_request_error",
+                    }
+                },
+                status=400,
+            )
+            return
         self._json(
             {
                 "id": "chatcmpl-fixture",
@@ -79,11 +91,12 @@ def profile_environment(root, url):
         "HERMES_CONVO_SAFE_MASTER_KEY": bytes(32).hex(),
         "OPENAI_API_KEY": "fixture",
         "CUSTOM_API_KEY": "fixture",
+        "HERMES_DUMP_REQUEST_STDOUT": "1",
         "NO_PROXY": "127.0.0.1",
     }
 
 
-def check_turn(env, captured):
+def check_turn(env, captured, *, expect_failure=False):
     """Resume a newly bound session through the ordinary one-shot CLI."""
     cli = [sys.executable, "-m", "hermes_cli.main"]
     created = subprocess.run(
@@ -109,12 +122,31 @@ def check_turn(env, captured):
         capture_output=True,
         text=True,
         timeout=120,
-        check=True,
+        check=False,
     )
-    assert INPUT_EMAIL not in answer.stdout and OUTPUT_EMAIL not in answer.stdout
+    assert answer.returncode == int(expect_failure)
+    output = answer.stdout + answer.stderr
+    assert all(
+        email not in output for email in (INPUT_EMAIL, OUTPUT_EMAIL, ERROR_EMAIL)
+    )
     requests = [json.dumps(record) for record in captured if record.get("messages")]
     assert requests and any("[[CONVO_SAFE:" in request for request in requests)
     assert all(INPUT_EMAIL not in request for request in requests)
+
+
+def check_failure_diagnostics(root):
+    """Check the durable request dump and all text diagnostics after the failure."""
+    dumps = list(root.rglob("request_dump_*.json"))
+    assert dumps
+    assert any(
+        "[[CONVO_SAFE:"
+        in json.loads(path.read_text(encoding="utf-8"))["error"]["message"]
+        for path in dumps
+    )
+    for path in root.rglob("*"):
+        if path.is_file() and path.suffix in {".log", ".json", ".jsonl"}:
+            contents = path.read_bytes()
+            assert ERROR_EMAIL.encode() not in contents, path.relative_to(root)
 
 
 def main():
@@ -124,13 +156,17 @@ def main():
         ThreadingHTTPServer(("127.0.0.1", 0), FixtureProvider) as server,
     ):
         server.captured = []
+        server.fail_requests = False
         fixture = Thread(target=server.serve_forever, daemon=True)
         fixture.start()
-        env = profile_environment(
-            Path(directory), f"http://127.0.0.1:{server.server_port}/v1"
-        )
+        root = Path(directory)
+        env = profile_environment(root, f"http://127.0.0.1:{server.server_port}/v1")
         try:
             check_turn(env, server.captured)
+            server.captured.clear()
+            server.fail_requests = True
+            check_turn(env, server.captured, expect_failure=True)
+            check_failure_diagnostics(root)
         finally:
             server.shutdown()
             fixture.join()
