@@ -135,3 +135,9 @@ Four fresh processes exercise protected session creation, a 1 MiB transcript
 write, request projection, SQLite compression and resume, and redacted JSONL
 diversion with SQLite offline. The test uses synthetic inputs and a disposable
 profile, and checks that the saved fallback restores byte for byte.
+
+Run `tests/hermes_cli_loopback.py` against a Hermes checkout with the protected
+CLI entry point. It creates and resumes a protected session through the CLI
+and inspects each request sent to a local fixture provider. It uses a separate
+profile and synthetic credentials, and checks that plaintext never appears in
+the fixture's requests or the CLI output.
