@@ -2,8 +2,10 @@
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -149,6 +151,23 @@ def check_failure_diagnostics(root):
             assert ERROR_EMAIL.encode() not in contents, path.relative_to(root)
 
 
+def check_admission_ledger(root):
+    """Verify stored gateway input for both turns, including the failed turn."""
+    with closing(sqlite3.connect(root / "state.db")) as database:
+        rows = database.execute(
+            "SELECT payload_json FROM session_admissions ORDER BY seq"
+        ).fetchall()
+    assert sum("[[CONVO_SAFE:" in payload for (payload,) in rows) >= 2
+    for (payload,) in rows:
+        assert INPUT_EMAIL not in payload
+    for path in root.glob("state.db*"):
+        contents = path.read_bytes()
+        assert all(
+            email.encode() not in contents
+            for email in (INPUT_EMAIL, OUTPUT_EMAIL, ERROR_EMAIL)
+        ), path.name
+
+
 def main():
     """Run the fixture with a disposable Hermes profile and stop only its gateway."""
     with (
@@ -167,6 +186,7 @@ def main():
             server.fail_requests = True
             check_turn(env, server.captured, expect_failure=True)
             check_failure_diagnostics(root)
+            check_admission_ledger(root)
         finally:
             server.shutdown()
             fixture.join()
