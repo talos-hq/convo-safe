@@ -137,6 +137,23 @@ Session IDs, content IDs, categories, and ciphertext lengths are visible in its
 database. Losing the master key prevents replay. Keep original prompts and
 restoration output on the trusted side of the application.
 
+## Resuming archived conversations
+
+Use the Python extension to continue an unsealed sidecar with
+`Keybox.resume_replay(log, master_key)`. Its `replay_session` property supplies
+the owning session ID. `seal_replay()` finalizes that sidecar and prevents
+later appends. A trusted reader can fork a saved sidecar with
+`fork_replay(new_log)` and resume the new path. Existing parent markers survive
+the fork. Divergent mappings remain branch-local.
+
+Use `redact_model_text` for model responses containing authentic existing
+markers. Ordinary `redact` escapes literal marker syntax in fresh raw text.
+Use `restore_strict(session, text, max_bytes)` when a saved record must contain
+only valid, resolvable markers.
+
+See the [Hermes Slim integration plan](docs/hermes-slim.md) for transcript
+projection, compression boundaries and deployment checks.
+
 ## Build and validate
 
 Run the local Linux gate with `python3 ci/gate.py`. It runs Rust and Python

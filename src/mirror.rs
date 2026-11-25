@@ -1,6 +1,8 @@
 use crate::{Error, Keybox, Keys, Result, SCHEMA, SessionId, metadata, require_session};
+use chacha20poly1305::aead::{OsRng, rand_core::RngCore};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use std::{
+    fs,
     io::ErrorKind,
     path::{Path, PathBuf},
     time::Duration,
@@ -29,7 +31,7 @@ fn seal_tag(keys: &Keys, session: SessionId, highest_content: i64) -> blake3::Ha
     )
 }
 
-fn is_finalized(
+pub(crate) fn is_finalized(
     db: &Connection,
     keys: &Keys,
     session: SessionId,
@@ -51,7 +53,7 @@ fn is_finalized(
     Ok(false)
 }
 
-fn tail(db: &Connection, session: SessionId) -> Result<i64> {
+pub(crate) fn tail(db: &Connection, session: SessionId) -> Result<i64> {
     Ok(db.query_row(
         "SELECT COALESCE(MAX(content), 0) FROM entries WHERE session = ?",
         [session],
@@ -59,13 +61,38 @@ fn tail(db: &Connection, session: SessionId) -> Result<i64> {
     )?)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CopyMode {
+    Checkpoint,
+    Finalize,
+    Fork,
+}
+
 impl Keybox {
     /// Open the single-session mirror next to a log in read-only mode.
     pub fn open_replay(log: impl AsRef<Path>, master: &[u8; 32]) -> Result<Self> {
+        Self::open_scoped(log.as_ref(), master, false)
+    }
+
+    /// Reopen an unsealed, single-session sidecar for continued redaction.
+    pub fn resume_replay(log: impl AsRef<Path>, master: &[u8; 32]) -> Result<Self> {
+        Self::open_scoped(log.as_ref(), master, true)
+    }
+
+    fn open_scoped(log: &Path, master: &[u8; 32], writable: bool) -> Result<Self> {
+        let access = if writable {
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+        } else {
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+        };
         let db = Connection::open_with_flags(
             replay_path(log)?,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+            access | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
+        if writable {
+            db.pragma_update(None, "foreign_keys", true)?;
+            db.pragma_update(None, "synchronous", "FULL")?;
+        }
         db.busy_timeout(Duration::from_secs(5))?;
         let session = owner(&db)?.ok_or(Error::InvalidMirror)?;
         require_session(&db, session)?;
@@ -76,7 +103,10 @@ impl Keybox {
         }
         // Read the tail and seal from one snapshot, including during a checkpoint.
         let read = db.unchecked_transaction()?;
-        is_finalized(&read, &keys, session, tail(&read, session)?)?;
+        let sealed = is_finalized(&read, &keys, session, tail(&read, session)?)?;
+        if writable && sealed {
+            return Err(Error::SessionFinalized);
+        }
         read.commit()?;
         Ok(Self {
             db,
@@ -87,29 +117,72 @@ impl Keybox {
 
     /// Append newly committed encrypted entries to the replay database for the log.
     pub fn checkpoint(&self, session: SessionId, log: impl AsRef<Path>) -> Result<()> {
-        self.sync_replay(session, log.as_ref(), false)
+        self.sync_replay(session, log.as_ref(), CopyMode::Checkpoint)
     }
 
     /// Commit the remaining entries and seal the replay database. Retrying is safe.
     pub fn finalize_replay(&self, session: SessionId, log: impl AsRef<Path>) -> Result<()> {
-        self.sync_replay(session, log.as_ref(), true)
+        self.sync_replay(session, log.as_ref(), CopyMode::Finalize)
     }
 
-    fn sync_replay(&self, session: SessionId, log: &Path, finalize: bool) -> Result<()> {
+    /// Return the sidecar's numeric session owner, if this is a scoped Keybox.
+    pub fn replay_session(&self) -> Option<SessionId> {
+        self.replay_session
+    }
+
+    /// A stable authenticated lineage identifier for the sidecar owner.
+    pub fn replay_identity(&self) -> Option<String> {
+        self.replay_session.map(|session| {
+            blake3::keyed_hash(
+                &self.keys.marker,
+                format!("v1 replay identity:{session}").as_bytes(),
+            )
+            .to_hex()
+            .to_string()
+        })
+    }
+
+    /// Copy a consistent sidecar snapshot to a new log, preserving inherited markers.
+    pub fn fork_replay(&self, new_log: impl AsRef<Path>) -> Result<()> {
+        let session = self.replay_session.ok_or(Error::InvalidMirror)?;
+        self.sync_replay(session, new_log.as_ref(), CopyMode::Fork)
+    }
+
+    /// Seal the resumed sidecar. Existing readers can continue locating its mappings.
+    pub fn seal_replay(&mut self) -> Result<()> {
+        let session = self.replay_session.ok_or(Error::InvalidMirror)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let highest = tail(&tx, session)?;
+        if !is_finalized(&tx, &self.keys, session, highest)? {
+            write_seal(&tx, &self.keys, session, highest)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn sync_replay(&self, session: SessionId, log: &Path, mode: CopyMode) -> Result<()> {
         let source = self.db.unchecked_transaction()?;
         require_session(&source, session)?;
-        if owner(&source)?.is_some() {
+        if mode != CopyMode::Fork && owner(&source)?.is_some() {
             return Err(Error::InvalidMirror);
         }
         let (namespace, verifier) = metadata(&source)?.ok_or(Error::InvalidMirror)?;
         let path = replay_path(log)?;
-        let new = match crate::platform::create_private(&path) {
-            Ok(_) => true,
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => false,
+        let staging = match fs::symlink_metadata(&path) {
+            Ok(_) if mode == CopyMode::Fork => return Err(Error::InvalidMirror),
+            Ok(_) => None,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                Some(StagedSidecar::create(&path)?)
+            }
             Err(_) => return Err(Error::Storage),
         };
+        let db_path = staging
+            .as_ref()
+            .map_or(path.as_path(), |staged| staged.0.as_path());
         let mut mirror = Connection::open_with_flags(
-            &path,
+            db_path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         mirror.busy_timeout(Duration::from_secs(5))?;
@@ -117,7 +190,7 @@ impl Keybox {
         mirror.pragma_update(None, "synchronous", "FULL")?;
         let dest = mirror.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        if new {
+        if staging.is_some() {
             dest.execute_batch(SCHEMA)?;
             dest.execute(
                 "INSERT INTO keybox VALUES (1, ?, ?)",
@@ -133,6 +206,9 @@ impl Keybox {
 
         let copied = tail(&dest, session)?;
         let latest = tail(&source, session)?;
+        if mode == CopyMode::Fork {
+            is_finalized(&source, &self.keys, session, latest)?;
+        }
         if copied > latest {
             return Err(Error::InvalidMirror);
         }
@@ -149,37 +225,86 @@ impl Keybox {
             }
         }
         if is_finalized(&dest, &self.keys, session, copied)? {
-            return if copied == latest && finalize {
+            return if copied == latest && mode == CopyMode::Finalize {
                 Ok(())
             } else {
                 Err(Error::SessionFinalized)
             };
         }
 
-        {
-            let mut read = source.prepare(
-                "SELECT content, kind, fingerprint, record FROM entries WHERE session = ? AND content > ? ORDER BY content",
-            )?;
-            let mut rows = read.query(params![session, copied])?;
-            let mut write = dest.prepare("INSERT INTO entries VALUES (?, ?, ?, ?, ?)")?;
-            while let Some(row) = rows.next()? {
-                write.execute(params![
-                    session,
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, [u8; 32]>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                ])?;
-            }
-        }
-        if finalize {
-            let tag = seal_tag(&self.keys, session, latest);
-            dest.execute(
-                "INSERT INTO replay_end VALUES (?, ?)",
-                params![session, tag.as_bytes()],
-            )?;
+        copy_new_entries(&source, &dest, session, copied)?;
+        if mode == CopyMode::Finalize {
+            write_seal(&dest, &self.keys, session, latest)?;
         }
         dest.commit()?;
+        if let Some(staged) = staging {
+            drop(mirror);
+            fs::hard_link(&staged.0, &path).map_err(|error| {
+                if error.kind() == ErrorKind::AlreadyExists {
+                    Error::InvalidMirror
+                } else {
+                    Error::Storage
+                }
+            })?;
+            crate::platform::sync_parent(&path).map_err(|_| Error::Storage)?;
+        }
         Ok(())
+    }
+}
+
+fn copy_new_entries(
+    source: &Connection,
+    dest: &Connection,
+    session: SessionId,
+    copied: i64,
+) -> Result<()> {
+    let mut read = source.prepare(
+                "SELECT content, kind, fingerprint, record FROM entries WHERE session = ? AND content > ? ORDER BY content",
+            )?;
+    let mut rows = read.query(params![session, copied])?;
+    let mut write = dest.prepare("INSERT INTO entries VALUES (?, ?, ?, ?, ?)")?;
+    while let Some(row) = rows.next()? {
+        write.execute(params![
+            session,
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, [u8; 32]>(2)?,
+            row.get::<_, Vec<u8>>(3)?,
+        ])?;
+    }
+    Ok(())
+}
+
+fn write_seal(db: &Connection, keys: &Keys, session: SessionId, highest: i64) -> Result<()> {
+    let tag = seal_tag(keys, session, highest);
+    db.execute(
+        "INSERT INTO replay_end VALUES (?, ?)",
+        params![session, tag.as_bytes()],
+    )?;
+    Ok(())
+}
+
+struct StagedSidecar(PathBuf);
+
+impl StagedSidecar {
+    fn create(dest: &Path) -> Result<Self> {
+        let mut nonce = [0; 32];
+        OsRng
+            .try_fill_bytes(&mut nonce)
+            .map_err(|_| Error::Entropy)?;
+        let name = format!(
+            ".convo-safe-{}.pending",
+            blake3::Hash::from_bytes(nonce).to_hex()
+        );
+        let path = dest.with_file_name(name);
+        crate::platform::create_private(&path).map_err(|_| Error::Storage)?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for StagedSidecar {
+    fn drop(&mut self) {
+        // The name belongs to this process and has already been published or abandoned.
+        let _ = fs::remove_file(&self.0);
     }
 }
