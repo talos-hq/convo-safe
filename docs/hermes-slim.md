@@ -111,6 +111,33 @@ Convo Safe's native and installed-wheel tests exercise strict replay, writable
 resume, sealed forks, branch isolation and a long synthetic compression
 round trip. Hermes-side instrumentation is the next integration phase.
 
+## Isolated pilot and backup
+
+Install a Convo Safe wheel built from a revision that contains
+`convo_safe.replay.open_bound_replay` in the Python environment used by the
+Hermes gateway. The published Convo Safe 0.1.0 wheel lacks that module. Record
+the source revision and wheel digest with the pilot. Verify the import in the
+gateway's interpreter before creating any protected sessions.
+
+Use a disposable Hermes profile and provision its master key through the
+profile's secret configuration as `HERMES_CONVO_SAFE_MASTER_KEY`. Create a
+protected session with `hermes sessions create-protected` and resume the
+returned ID with `hermes chat --resume <session-id>`. Use synthetic inputs
+through the pilot, including a long conversation that compresses before
+restart. Inspect the saved redacted records using ordinary analysis tools.
+
+For a filesystem backup, stop the profile's gateway and other writers and
+copy the closed profile as a unit. Preserve `state.db`, the entire
+`protected-transcripts/` directory and any transcript or retry-spool
+artifacts. Retain the master key separately from the backup and restore it
+through secret configuration. If the profile contains a file with the master
+key, exclude that file from the backup and record how the restore operator
+will retrieve the key. Use a new profile directory for the restore drill and
+resume the saved session before putting the restored profile into service.
+The conformance test validates a closed profile copy. Coordinated online
+snapshots across the transcript and Keybox databases remain a separate
+deployment requirement if writers cannot be stopped.
+
 ## Cross-repository persistence check
 
 From the Convo Safe checkout, use an existing Hermes Slim development Python
