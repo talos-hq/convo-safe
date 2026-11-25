@@ -138,6 +138,23 @@ The conformance test validates a closed profile copy. Coordinated online
 snapshots across the transcript and Keybox databases remain a separate
 deployment requirement if writers cannot be stopped.
 
+## Analyze a saved profile
+
+For offline analysis of a closed profile copy, open `state.db` read-only.
+The Keybox and master key are unnecessary for counting records or inspecting
+redacted text. A compression parent retains its rows and has
+`end_reason = 'compression'`. The `messages.active` flag describes the row
+within its session, so use the session's end reason to distinguish parent
+history from the current segment.
+
+```sql
+SELECT s.id, s.end_reason, m.role, m.active, COUNT(*) AS records
+FROM messages AS m
+JOIN sessions AS s ON s.id = m.session_id
+GROUP BY s.id, s.end_reason, m.role, m.active
+ORDER BY s.id, m.role, m.active;
+```
+
 ## Cross-repository persistence check
 
 From the Convo Safe checkout, use an existing Hermes Slim development Python
