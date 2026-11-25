@@ -107,9 +107,12 @@ plugin and add only the enforcement and persistence contracts to Hermes core.
   Existing plaintext history requires an explicit migration and retention
   decision. Leave production history untouched during the pilot.
 
-Convo Safe's native and installed-wheel tests exercise strict replay, writable
-resume, sealed forks, branch isolation and a long synthetic compression
-round trip. Hermes-side instrumentation is the next integration phase.
+The Hermes pilot exercises the protected CLI and gateway path with a local
+provider fixture. It checks successful and failed turns, request diagnostics,
+SQLite admissions, redacted shutdown recovery, and exact replay after
+compression. The installed-wheel suite also checks profile relocation,
+Keybox substitution and corruption, and recovery when SQLite is unavailable.
+These checks use disposable profiles and synthetic text.
 
 ## Isolated pilot and backup
 
@@ -125,6 +128,13 @@ protected session with `hermes sessions create-protected` and resume the
 returned ID with `hermes chat --resume <session-id>`. Use synthetic inputs
 through the pilot, including a long conversation that compresses before
 restart. Inspect the saved redacted records using ordinary analysis tools.
+
+Set `HERMES_CONVO_SAFE_LITERAL_KEYS` to the names of profile secrets that
+need exact matching, separated by commas. Provision the corresponding
+values through the profile's secret configuration. Missing values block
+protected projection. The pilot refuses opaque attachments and tool calls
+that would require plaintext restoration. A protected follow-up that cannot
+reach durable admission is declined before the gateway acknowledges it.
 
 For a filesystem backup, stop the profile's gateway and other writers and
 copy the closed profile as a unit. Preserve `state.db`, the entire
