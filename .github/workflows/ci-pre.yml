@@ -1,0 +1,26 @@
+name: ci-pre
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  precheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: forge-ci/ci.yml
+          ref: d9d461f85f12cffe65e05ec2d827083e635211ed
+          path: .ci-lint
+          persist-credentials: false
+      - name: Forge CI precheck
+        env:
+          PYTHONPATH: .ci-lint
+        run: python3 -m ci_lint precheck --repo .

@@ -1,6 +1,8 @@
 //! Local, reversible redaction for prompts and conversation replays.
 
 mod mirror;
+#[doc(hidden)]
+pub mod platform;
 #[cfg(feature = "python")]
 mod python;
 mod scanner;

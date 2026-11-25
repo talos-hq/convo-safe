@@ -1,5 +1,5 @@
 [build-system]
-requires = ["soldr==0.9.56"]
+requires = ["soldr>=0.9.56"]
 build-backend = "soldr"
 
 [project]
@@ -21,3 +21,15 @@ include = [{ path = "rust-toolchain.toml", format = "sdist" }]
 
 [tool.soldr.pep517]
 bundle-bins = [{ bin = "convo-safe", package = "convo-safe" }]
+
+[dependency-groups]
+lint = ["pylint", "ruff"]
+
+[tool.ruff.lint]
+extend-select = ["I", "C901", "RUF100"]
+
+[tool.pylint.main]
+extension-pkg-allow-list = ["convo_safe._native"]
+
+[tool.ruff.per-file-target-version]
+"ci/*.py" = "py311"

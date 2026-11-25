@@ -1,0 +1,71 @@
+name: PyPI release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Confirm release commit is on main
+        if: github.event_name == 'push'
+        run: git merge-base --is-ancestor HEAD origin/main
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          enable-cache: false
+      - uses: ./.github/actions/soldr
+      - name: Lint the release source
+        run: python3 ci/gate.py lint
+      - name: Test the release source
+        run: python3 ci/gate.py unit
+      - name: Build and verify glibc compatibility and installed replay
+        run: python3 ci/wheel.py release
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: forge-ci/ci.yml
+          ref: d9d461f85f12cffe65e05ec2d827083e635211ed
+          path: .ci-lint
+          persist-credentials: false
+      - name: Verify release artifact set
+        env:
+          PYTHONPATH: .ci-lint
+        run: python3 -m ci_lint release verify --repo . --dist dist/release --sha "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pypi-dist
+          path: |
+            dist/release/*.whl
+            dist/release/*.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/convo-safe/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: pypi-dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086

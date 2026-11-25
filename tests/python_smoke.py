@@ -9,6 +9,7 @@ from convo_safe import Keybox, SecretType
 
 
 def main():
+    """Verify Python redaction and replay through the packaged worker."""
     with TemporaryDirectory() as scratch:
         root = Path(scratch)
         key_file = root / "keybox.key"

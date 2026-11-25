@@ -1,0 +1,10 @@
+name: Set up Soldr
+description: Install the fleet-supported Rust toolchain without writing hosted caches.
+runs:
+  using: composite
+  steps:
+    - uses: forge-ci/setup-soldr@v0
+      with:
+        save-cache: "false"
+        solo-toolchain-cache: "false"
+        cook-delta: "false"

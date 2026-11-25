@@ -1,7 +1,6 @@
 use crate::{Error, Keybox, Keys, Result, SCHEMA, SessionId, metadata, require_session};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use std::{
-    fs::OpenOptions,
     io::ErrorKind,
     path::{Path, PathBuf},
     time::Duration,
@@ -104,14 +103,7 @@ impl Keybox {
         }
         let (namespace, verifier) = metadata(&source)?.ok_or(Error::InvalidMirror)?;
         let path = replay_path(log)?;
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let new = match options.open(&path) {
+        let new = match crate::platform::create_private(&path) {
             Ok(_) => true,
             Err(error) if error.kind() == ErrorKind::AlreadyExists => false,
             Err(_) => return Err(Error::Storage),

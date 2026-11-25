@@ -119,15 +119,14 @@ restoration output on the trusted side of the application.
 
 ## Build and validate
 
-```sh
-soldr cargo fmt --check
-soldr cargo test --locked --all-features
-soldr cargo clippy --locked --all-targets --all-features -- -D warnings
-uv build --config-setting profile=release
-twine check dist/*.whl dist/*.tar.gz
-```
+Run the local Linux gate with `python3 ci/gate.py`. It runs Rust and Python
+lint, Rust integration tests, and a smoke test of the installed native wheel.
 
-The Python package uses PyO3's stable ABI for Python 3.10 and newer.
+Run `python3 ci/wheel.py release` to stage a source archive and a Linux x86-64
+wheel in `dist/release`. The release gate checks the glibc 2.17 floor and tests
+the installed worker on Python 3.10 and 3.14. The Rust package is internal to
+the Python app while its API and crate layout stabilize.
 
-After installing the wheel in a clean environment, run `python tests/python_smoke.py`
-to exercise the Python API and the installed native replay command.
+A manual run of `auto-release.yml` stages artifacts for review. A new version
+tag on main, matching both package manifests, publishes the staged artifacts
+to PyPI through the `pypi` environment.

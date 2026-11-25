@@ -1,0 +1,108 @@
+schema = 3
+profile = "rust-pypi-app"
+linter = "forge-ci/ci.yml@d9d461f85f12cffe65e05ec2d827083e635211ed"
+
+[platforms.linux-x64]
+target = "x86_64-unknown-linux-gnu"
+runs-on = "ubuntu-24.04"
+group = "linux"
+wheel = "manylinux_2_17"
+
+[python]
+backend = "soldr"
+cli = { name = "convo-safe", crate = "convo-safe", native = true }
+abi3 = "cp310"
+pythons = ["3.10", "3.14"]
+
+[rust]
+# The Rust crate is internal to the Python application. No public crate.
+public = "."
+private = "crates/private/*"
+ship = []
+
+[rust.tests]
+max-binary = "40MB"
+max-total = "150MB"
+binaries = [
+    "convo-safe:test:credentials",
+    "convo-safe:test:pii",
+    "convo-safe:test:replay",
+]
+
+[suites]
+unit = { run = "python3 ci/gate.py unit", required = true }
+smoke = { run = "python3 ci/wheel.py smoke", required = true }
+
+[flow.pr]
+platforms = ["linux-x64"]
+suites = ["unit", "smoke"]
+
+[flow.main]
+extends = "pr"
+
+[flow.release]
+platforms = "all"
+suites = "all"
+wheels = "all"
+publish = "pypi"
+
+[local.gate]
+mode = "shadow"
+verify = "ci.yml:verify"
+run = ["python3", "ci/gate.py"]
+mirrors = ["ci.yml:unit"]
+verify-exempt = ["ci-pre"]
+setup-steps = ["Set up Soldr"]
+
+[tags]
+
+[cache]
+budget = "0B"
+write-on = ["main"]
+never = ["linked-tests", "nextest-archives", "wheels", "incremental", "target-dir", "perf-results"]
+pr = { mode = "none", families = [], max-per-pr = "0B", budget = "0B", trim = "on-close" }
+family = {}
+
+[local]
+runner = "bosn-act"
+lanes = ["lint", "unit", "smoke"]
+cache = "machine"
+
+[allow]
+workflows = { "ci.yml" = ["pull_request", "push:main", "merge_group"], "ci-pre.yml" = ["workflow_call"], "auto-release.yml" = ["push", "workflow_dispatch"] }
+actions = ["actions/checkout", "actions/upload-artifact", "actions/download-artifact", "forge-ci/setup-soldr", "astral-sh/setup-uv", "pypa/gh-action-pypi-publish"]
+tools = ["soldr", "uv", "python3", "git"]
+secrets = []
+setup-soldr = { only-in = ".github/actions/soldr", require = { save-cache = "false", solo-toolchain-cache = "false", cook-delta = "false" } }
+platform-selector = "src/platform.rs"
+platform-code = []
+permissions = { "id-token: write" = ["publish"] }
+
+[publish.pypi]
+auth = "oidc"
+environment = "pypi"
+mode = "real"
+
+[[exceptions]]
+rule = "BIN-001"
+path = "ci.toml#platforms"
+reason = "The first automated release supports the existing Linux x86-64 glibc platform at the 2.17 floor. Musl requires a separate native install test."
+issue = "https://github.com/forge-ci/ci.yml/issues/19"
+# Exception owner: talos-hq
+expires = "2027-02-28"
+
+[[exceptions]]
+rule = "RUST-008"
+path = ".github/workflows/ci.yml"
+reason = "Clippy checks all targets and features on the only declared triple in the fast job. A second cargo check would duplicate the coverage."
+issue = "https://github.com/forge-ci/ci.yml/issues/111"
+# Exception owner: talos-hq
+expires = "2027-02-28"
+
+[[exceptions]]
+rule = "RUST-011"
+path = "Cargo.toml"
+reason = "The application uses one unpublished Rust package for its worker and PyO3 extension. Public library layout will be decided when the Rust API stabilizes."
+issue = "https://github.com/forge-ci/ci.yml/issues/95"
+# Exception owner: talos-hq
+expires = "2027-02-28"
