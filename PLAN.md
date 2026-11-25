@@ -2,7 +2,7 @@
 
 ## Repository and runtime
 
-Use talos-hq/redact as the independent home for Convo Safe. clud's multicall dispatcher recognizes executable aliases early and can expose a thin adapter later. Building the implementation into clud would tie its build and release to clud while Python still needs its own bindings. A standalone library also lets callers embed redaction without a process. Offer a JSON Lines stdio server for callers that want a process boundary. The caller can start one worker for multiple sessions without installing a system service or listener.
+Use talos-hq/convo-safe as the independent home for Convo Safe. clud's multicall dispatcher recognizes executable aliases early and can expose a thin adapter later. Building the implementation into clud would tie its build and release to clud while Python still needs its own bindings. A standalone library also lets callers embed redaction without a process. Offer a JSON Lines stdio server for callers that want a process boundary. The caller can start one worker for multiple sessions without installing a system service or listener.
 
 ## Redaction and Keybox
 
