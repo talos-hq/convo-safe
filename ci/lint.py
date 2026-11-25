@@ -48,6 +48,7 @@ def main():
             "ci",
             "python",
             "tests/python_smoke.py",
+            "tests/hermes_replay.py",
         ],
         check=True,
     )
@@ -64,6 +65,7 @@ def main():
             "ci",
             "python",
             "tests/python_smoke.py",
+            "tests/hermes_replay.py",
         ],
         check=True,
     )
@@ -78,6 +80,7 @@ def main():
             "ci",
             "python",
             "tests/python_smoke.py",
+            "tests/hermes_replay.py",
         ],
         check=True,
     )
