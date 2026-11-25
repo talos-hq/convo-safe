@@ -131,10 +131,13 @@ resume independently of provider calls and the future runtime projector.
 
 Against a Hermes checkout that includes the protected runtime integration,
 run `tests/hermes_runtime_replay.py` with the same wheel and `PYTHONPATH`.
-Four fresh processes exercise protected session creation, a 1 MiB transcript
+Fresh processes exercise protected session creation, a 1 MiB transcript
 write, request projection, SQLite compression and resume, and redacted JSONL
 diversion with SQLite offline. The test uses synthetic inputs and a disposable
-profile, and checks that the saved fallback restores byte for byte.
+profile, and checks that the saved fallback restores byte for byte. The backup
+drill copies the closed profile to a new directory, resumes its compressed
+history, and verifies that missing or incorrect master keys and missing,
+swapped, or corrupt Keybox files block resume.
 
 Run `tests/hermes_cli_loopback.py` against a Hermes checkout with the protected
 CLI entry point. It creates and resumes a protected session through the CLI

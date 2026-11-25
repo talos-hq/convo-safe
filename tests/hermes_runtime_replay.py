@@ -3,7 +3,11 @@
 import argparse
 import json
 import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -133,32 +137,86 @@ def recover_offline(root):
 PHASES = {"write": write_parent, "compress": compress_parent, "resume": resume_child}
 
 
+def check_restored_resume(root, *, key=MASTER, expect_failure=False):
+    """Check a relocated profile in a fresh process with independent config."""
+    env = {
+        **os.environ,
+        "HERMES_HOME": str(root),
+        "HERMES_RUNTIME_DIR": str(root / "runtime"),
+        "HERMES_CONVO_SAFE_MASTER_KEY": key.hex() if key is not None else "",
+    }
+    phase = "reject-resume" if expect_failure else "resume"
+    subprocess.run(
+        [sys.executable, str(Path(__file__).resolve()), "--phase", phase],
+        env=env,
+        check=True,
+        timeout=120,
+    )
+
+
+def check_profile_backup(root):
+    """Restore a quiescent profile and reject incomplete or mismatched copies."""
+    from hermes_state_replay import replay_log_path  # pylint: disable=import-error,import-outside-toplevel
+
+    with TemporaryDirectory() as directory:
+        restored = Path(directory) / "restored"
+        shutil.copytree(root, restored)
+        check_restored_resume(restored)
+        check_restored_resume(restored, key=None, expect_failure=True)
+        check_restored_resume(restored, key=bytes([1]) * 32, expect_failure=True)
+        parent_log = replay_log_path(restored / "state.db", "parent")
+        child_log = replay_log_path(restored / "state.db", "child")
+        parent = parent_log.with_name(parent_log.name + ".keybox.sqlite")
+        child = child_log.with_name(child_log.name + ".keybox.sqlite")
+        saved = child.with_suffix(".saved")
+        child.rename(saved)
+        check_restored_resume(restored, expect_failure=True)
+        shutil.copyfile(parent, child)
+        check_restored_resume(restored, expect_failure=True)
+        child.write_bytes(b"corrupt sidecar")
+        check_restored_resume(restored, expect_failure=True)
+        saved.replace(child)
+        check_restored_resume(restored)
+
+
 def run_phase(phase):
     """Open runtime state only in the isolated child process."""
     from hermes_state import SessionDB  # pylint: disable=import-error,import-outside-toplevel
+    from hermes_state_replay import ProtectedReplayError  # pylint: disable=import-error,import-outside-toplevel
 
     root = Path(os.environ["HERMES_HOME"])
+    if phase == "backup":
+        check_profile_backup(root)
+        return
     if phase == "offline":
         recover_offline(root)
         return
     with SessionDB(db_path=root / "state.db") as db:
+        if phase == "reject-resume":
+            try:
+                resume_child(db)
+            except ProtectedReplayError:
+                return
+            raise AssertionError("Resume accepted a damaged profile backup")
         PHASES[phase](db)
 
 
 def main():
-    """Run four fresh interpreters against one disposable profile."""
+    """Exercise restart, backup relocation and offline recovery in fresh processes."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", choices=(*PHASES, "offline"))
+    parser.add_argument(
+        "--phase", choices=(*PHASES, "backup", "reject-resume", "offline")
+    )
     args = parser.parse_args()
     if args.phase:
         run_phase(args.phase)
         return
     run_isolated_phases(
         Path(__file__).resolve(),
-        (*PHASES, "offline"),
+        (*PHASES, "backup", "offline"),
         extra_env={"HERMES_CONVO_SAFE_MASTER_KEY": MASTER.hex()},
     )
-    print("Hermes runtime replay passed across four processes")
+    print("Hermes runtime replay, profile backup, and offline recovery passed")
 
 
 if __name__ == "__main__":
