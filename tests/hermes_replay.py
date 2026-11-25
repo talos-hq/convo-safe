@@ -8,6 +8,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from convo_safe import Keybox  # pylint: disable=import-error
+from convo_safe.replay import (  # pylint: disable=import-error
+    ReplayBindingError,
+    open_bound_replay,
+    replay_binding,
+)
 
 MASTER = bytes(range(32))
 PREFIX = "π" * 524_288 + " password="
@@ -44,11 +49,7 @@ def compress_parent(root, db):
     parent.fork_replay(root / "child.jsonl")
     parent.fork_replay(root / "sibling.jsonl")
     child = Keybox.open_replay(root / "child.jsonl", MASTER)
-    binding = {
-        "lineage": child.replay_identity,
-        "sidecar": child.replay_sidecar_id,
-    }
-    assert all(binding.values())
+    binding = replay_binding(child)
     assert_stale_lease_keeps_parent(db, parent, projected, summary, binding)
     db.publish_compression_child(
         parent_session_id="parent",
@@ -93,18 +94,20 @@ def resume_child(root, db):
     """Verify exact redacted and restored records after another process restart."""
     tip = db.resolve_resume_session_id("parent")
     assert tip == "child"
-    child = Keybox.resume_replay(root / "child.jsonl", MASTER)
+    binding = db.get_session_model_config_value(tip, "replay_binding")
+    child = open_bound_replay(root / "child.jsonl", MASTER, binding, writable=True)
     scope = child.replay_session
     summary = db.get_messages(tip)[0]["content"]
-    binding = db.get_session_model_config_value(tip, "replay_binding")
-    assert binding == {
-        "lineage": child.replay_identity,
-        "sidecar": child.replay_sidecar_id,
-    }
     sibling = Keybox.open_replay(root / "sibling.jsonl", MASTER)
     assert sibling.replay_sidecar_id != binding["sidecar"]
     assert sibling.replay_identity == child.replay_identity
     sibling.validate_references(scope, summary)
+    try:
+        open_bound_replay(root / "sibling.jsonl", MASTER, binding)
+    except ReplayBindingError:
+        pass
+    else:
+        raise AssertionError("resume accepted the wrong fork")
     projected = db.get_messages("parent")[0]["content"]
     assert summary == (root / "expected-summary.txt").read_text(encoding="utf-8")
     assert projected == (root / "expected-prefix.txt").read_text(encoding="utf-8")
