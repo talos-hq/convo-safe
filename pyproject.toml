@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 
 [project.urls]
-Repository = "https://github.com/talos-hq/redact"
+Repository = "https://github.com/talos-hq/convo-safe"
 
 [tool.maturin]
 module-name = "convo_safe._native"
