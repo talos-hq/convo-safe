@@ -111,6 +111,7 @@ pub enum Error {
     InvalidMirror,
     SessionFinalized,
     OutputLimit,
+    InvalidMarker,
 }
 
 impl fmt::Display for Error {
@@ -126,6 +127,7 @@ impl fmt::Display for Error {
             Self::InvalidMirror => "replay database does not match this session",
             Self::SessionFinalized => "session replay is finalized",
             Self::OutputLimit => "restored message exceeds output capacity",
+            Self::InvalidMarker => "redacted text contains an invalid or unresolved placeholder",
         })
     }
 }
@@ -303,6 +305,9 @@ impl Keybox {
 
     /// Allocate a stable, monotonically increasing session ID.
     pub fn create_session(&mut self) -> Result<SessionId> {
+        if self.replay_session.is_some() {
+            return Err(Error::InvalidMirror);
+        }
         self.db.execute("INSERT INTO sessions DEFAULT VALUES", [])?;
         Ok(self.db.last_insert_rowid())
     }
@@ -317,7 +322,7 @@ impl Keybox {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        require_session(&tx, session)?;
+        writable_session(&tx, &self.keys, self.replay_session, session)?;
         let placeholder = insert(&tx, &self.keys, session, kind, secret)?;
         tx.commit()?;
         Ok(placeholder)
@@ -335,21 +340,80 @@ impl Keybox {
         input: &str,
         options: RedactionOptions,
     ) -> Result<String> {
-        let matches = scanner::matches(input, options);
+        self.redact_text(session, input, options, false)
+    }
+
+    /// Redact new values in a model response while preserving authentic placeholders.
+    /// Reject unresolved markers before returning any output.
+    pub fn redact_model_text(
+        &mut self,
+        session: SessionId,
+        input: &str,
+        options: RedactionOptions,
+    ) -> Result<String> {
+        self.redact_text(session, input, options, true)
+    }
+
+    fn redact_text(
+        &mut self,
+        session: SessionId,
+        input: &str,
+        options: RedactionOptions,
+        preserve: bool,
+    ) -> Result<String> {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        require_session(&tx, session)?;
+        writable_session(&tx, &self.keys, self.replay_session, session)?;
         let mut result = String::with_capacity(input.len());
         let mut cursor = 0;
-        for (start, end, kind) in matches {
-            result.push_str(&input[cursor..start].replace(PREFIX, ESCAPE));
-            result.push_str(&insert(&tx, &self.keys, session, kind, &input[start..end])?);
-            cursor = end;
+        if preserve {
+            for marker in MARKER.captures_iter(input) {
+                let whole = marker.get(0).expect("capture zero");
+                let gap = &input[cursor..whole.start()];
+                reject_raw_marker(gap)?;
+                if whole.as_str() != ESCAPE
+                    && restore_marker(&tx, &self.keys, session, &marker, usize::MAX)?.is_none()
+                {
+                    return Err(Error::InvalidMarker);
+                }
+                redact_fragment(&tx, &self.keys, session, gap, options, &mut result)?;
+                result.push_str(whole.as_str());
+                cursor = whole.end();
+            }
+            reject_raw_marker(&input[cursor..])?;
         }
-        result.push_str(&input[cursor..].replace(PREFIX, ESCAPE));
+        redact_fragment(
+            &tx,
+            &self.keys,
+            session,
+            &input[cursor..],
+            options,
+            &mut result,
+        )?;
         tx.commit()?;
         Ok(result)
+    }
+
+    /// Validate saved placeholders without returning any restored plaintext.
+    pub fn validate_references(&self, session: SessionId, input: &str) -> Result<()> {
+        require_scope(self.replay_session, session)?;
+        let read = self.db.unchecked_transaction()?;
+        require_session(&read, session)?;
+        let mut cursor = 0;
+        for marker in MARKER.captures_iter(input) {
+            let whole = marker.get(0).expect("capture zero");
+            reject_raw_marker(&input[cursor..whole.start()])?;
+            if whole.as_str() != ESCAPE
+                && restore_marker(&read, &self.keys, session, &marker, usize::MAX)?.is_none()
+            {
+                return Err(Error::InvalidMarker);
+            }
+            cursor = whole.end();
+        }
+        reject_raw_marker(&input[cursor..])?;
+        read.commit()?;
+        Ok(())
     }
 
     /// Restore exact, authenticated markers for this session. Call only on a trusted replay path.
@@ -364,81 +428,160 @@ impl Keybox {
         input: &str,
         max_bytes: usize,
     ) -> Result<String> {
-        if self.replay_session.is_some_and(|owner| owner != session) {
-            return Err(Error::UnknownSession);
-        }
+        self.restore_text(session, input, max_bytes, false)
+    }
+
+    /// Restore a saved transcript and fail on malformed, unknown or foreign markers.
+    pub fn restore_strict(
+        &self,
+        session: SessionId,
+        input: &str,
+        max_bytes: usize,
+    ) -> Result<String> {
+        self.restore_text(session, input, max_bytes, true)
+    }
+
+    fn restore_text(
+        &self,
+        session: SessionId,
+        input: &str,
+        max_bytes: usize,
+        strict: bool,
+    ) -> Result<String> {
+        require_scope(self.replay_session, session)?;
         require_session(&self.db, session)?;
         let mut result = Zeroizing::new(String::with_capacity(input.len().min(max_bytes)));
         let mut cursor = 0;
         for marker in MARKER.captures_iter(input) {
             let whole = marker.get(0).expect("capture zero");
-            push_limited(&mut result, &input[cursor..whole.start()], max_bytes)?;
+            let gap = &input[cursor..whole.start()];
+            if strict {
+                reject_raw_marker(gap)?;
+            }
+            push_limited(&mut result, gap, max_bytes)?;
             cursor = whole.end();
             if whole.as_str() == ESCAPE {
                 push_limited(&mut result, PREFIX, max_bytes)?;
-            } else if let Some(secret) =
-                self.restore_marker(session, &marker, max_bytes - result.len())?
-            {
+            } else if let Some(secret) = restore_marker(
+                &self.db,
+                &self.keys,
+                session,
+                &marker,
+                max_bytes - result.len(),
+            )? {
                 push_limited(&mut result, &secret, max_bytes)?;
+            } else if strict {
+                return Err(Error::InvalidMarker);
             } else {
                 push_limited(&mut result, whole.as_str(), max_bytes)?;
             }
         }
+        if strict {
+            reject_raw_marker(&input[cursor..])?;
+        }
         push_limited(&mut result, &input[cursor..], max_bytes)?;
         Ok(std::mem::take(&mut *result))
     }
+}
 
-    fn restore_marker(
-        &self,
-        session: SessionId,
-        marker: &regex::Captures<'_>,
-        available: usize,
-    ) -> Result<Option<Zeroizing<String>>> {
-        let (Ok(kind), Ok(marker_session), Ok(content), Ok(tag)) = (
-            marker[1].parse::<SecretType>(),
-            marker[2].parse::<SessionId>(),
-            marker[3].parse::<i64>(),
-            blake3::Hash::from_hex(&marker[4]),
-        ) else {
-            return Ok(None);
-        };
-        if marker_session != session {
-            return Ok(None);
-        }
-        let entry: Option<([u8; 32], usize)> = self.db.query_row(
+fn restore_marker(
+    db: &Connection,
+    keys: &Keys,
+    session: SessionId,
+    marker: &regex::Captures<'_>,
+    available: usize,
+) -> Result<Option<Zeroizing<String>>> {
+    let (Ok(kind), Ok(marker_session), Ok(content), Ok(tag)) = (
+        marker[1].parse::<SecretType>(),
+        marker[2].parse::<SessionId>(),
+        marker[3].parse::<i64>(),
+        blake3::Hash::from_hex(&marker[4]),
+    ) else {
+        return Ok(None);
+    };
+    if marker_session != session {
+        return Ok(None);
+    }
+    let entry: Option<([u8; 32], usize)> = db.query_row(
             "SELECT fingerprint, length(record) FROM entries WHERE session = ? AND content = ? AND kind = ?",
             params![session, content, kind.name()],
             |row| Ok((row.get(0)?, row.get(1)?)),
         ).optional()?;
-        let Some((fingerprint, record_len)) = entry else {
-            return Ok(None);
-        };
-        let identity = identity(
-            session,
-            content,
-            kind,
-            &blake3::Hash::from_bytes(fingerprint),
-        );
-        if blake3::keyed_hash(&self.keys.marker, identity.as_bytes()) != tag {
-            return Ok(None);
-        }
-        let secret_len = record_len
-            .checked_sub(24 + 16)
-            .ok_or(Error::CorruptRecord)?;
-        if secret_len > available {
-            return Err(Error::OutputLimit);
-        }
-        let record: Vec<u8> = self
-            .db
-            .query_row(
-                "SELECT record FROM entries WHERE session = ? AND content = ? AND fingerprint = ?",
-                params![session, content, fingerprint],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(Error::CorruptRecord)?;
-        self.keys.decrypt(&identity, &record).map(Some)
+    let Some((fingerprint, record_len)) = entry else {
+        return Ok(None);
+    };
+    let identity = identity(
+        session,
+        content,
+        kind,
+        &blake3::Hash::from_bytes(fingerprint),
+    );
+    if blake3::keyed_hash(&keys.marker, identity.as_bytes()) != tag {
+        return Ok(None);
     }
+    let secret_len = record_len
+        .checked_sub(24 + 16)
+        .ok_or(Error::CorruptRecord)?;
+    if secret_len > available {
+        return Err(Error::OutputLimit);
+    }
+    let record: Vec<u8> = db
+        .query_row(
+            "SELECT record FROM entries WHERE session = ? AND content = ? AND fingerprint = ?",
+            params![session, content, fingerprint],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or(Error::CorruptRecord)?;
+    keys.decrypt(&identity, &record).map(Some)
+}
+
+fn reject_raw_marker(text: &str) -> Result<()> {
+    if text.contains(PREFIX) {
+        Err(Error::InvalidMarker)
+    } else {
+        Ok(())
+    }
+}
+
+fn require_scope(owner: Option<SessionId>, session: SessionId) -> Result<()> {
+    if owner.is_some_and(|owner| owner != session) {
+        Err(Error::UnknownSession)
+    } else {
+        Ok(())
+    }
+}
+
+fn writable_session(
+    db: &Connection,
+    keys: &Keys,
+    owner: Option<SessionId>,
+    session: SessionId,
+) -> Result<()> {
+    require_scope(owner, session)?;
+    require_session(db, session)?;
+    if owner.is_some() && mirror::is_finalized(db, keys, session, mirror::tail(db, session)?)? {
+        return Err(Error::SessionFinalized);
+    }
+    Ok(())
+}
+
+fn redact_fragment(
+    tx: &Transaction<'_>,
+    keys: &Keys,
+    session: SessionId,
+    input: &str,
+    options: RedactionOptions,
+    result: &mut String,
+) -> Result<()> {
+    let mut cursor = 0;
+    for (start, end, kind) in scanner::matches(input, options) {
+        result.push_str(&input[cursor..start].replace(PREFIX, ESCAPE));
+        result.push_str(&insert(tx, keys, session, kind, &input[start..end])?);
+        cursor = end;
+    }
+    result.push_str(&input[cursor..].replace(PREFIX, ESCAPE));
+    Ok(())
 }
 
 fn push_limited(result: &mut String, text: &str, limit: usize) -> Result<()> {

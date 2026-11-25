@@ -506,3 +506,169 @@ fn repeated_markers_respect_the_restore_byte_limit() {
         format!(">>{value}.{value}!")
     );
 }
+
+#[test]
+fn saved_scope_resumes_then_forks_without_rewriting_history() {
+    let scratch = Scratch::new();
+    let log = scratch.0.join("saved.jsonl");
+    let child = scratch.0.join("child.jsonl");
+    let sibling = scratch.0.join("sibling.jsonl");
+    let mut source = Keybox::open(":memory:", &KEY).unwrap();
+    let scope = source.create_session().unwrap();
+    let inherited = source.redact(scope, "password=fixture-parent").unwrap();
+    source.checkpoint(scope, &log).unwrap();
+    drop(source);
+
+    assert!(matches!(
+        Keybox::resume_replay(&log, &[41; 32]),
+        Err(Error::InvalidKey)
+    ));
+    let mut resumed = Keybox::resume_replay(&log, &KEY).unwrap();
+    let mut concurrent = Keybox::resume_replay(&log, &KEY).unwrap();
+    assert_eq!(resumed.replay_session(), Some(scope));
+    assert_eq!(resumed.create_session(), Err(Error::InvalidMirror));
+    assert_eq!(
+        resumed.redact(scope + 1, "plain"),
+        Err(Error::UnknownSession)
+    );
+    let newest = resumed.redact(scope, "password=fixture-durable").unwrap();
+    resumed.seal_replay().unwrap();
+    assert_eq!(
+        concurrent.redact(scope, "password=fixture-blocked"),
+        Err(Error::SessionFinalized)
+    );
+    assert!(matches!(
+        Keybox::resume_replay(&log, &KEY),
+        Err(Error::SessionFinalized)
+    ));
+
+    let saved = Keybox::open_replay(&log, &KEY).unwrap();
+    assert_eq!(
+        saved.restore_strict(scope, &newest, 1024).unwrap(),
+        "password=fixture-durable"
+    );
+    saved.fork_replay(&child).unwrap();
+    saved.fork_replay(&sibling).unwrap();
+    assert_eq!(saved.fork_replay(&child), Err(Error::InvalidMirror));
+    let mut a = Keybox::resume_replay(&child, &KEY).unwrap();
+    let mut b = Keybox::resume_replay(&sibling, &KEY).unwrap();
+    let divergent = a.redact(scope, "password=fixture-child").unwrap();
+    let _: String = b.redact(scope, "password=fixture-sibling").unwrap();
+    assert_eq!(
+        b.restore_strict(scope, &divergent, 1024),
+        Err(Error::InvalidMarker)
+    );
+    assert_eq!(
+        saved.restore_strict(scope, &divergent, 1024),
+        Err(Error::InvalidMarker)
+    );
+    assert_eq!(
+        a.restore_strict(scope, &inherited, 1024).unwrap(),
+        "password=fixture-parent"
+    );
+    assert_eq!(
+        b.restore_strict(scope, &inherited, 1024).unwrap(),
+        "password=fixture-parent"
+    );
+}
+
+#[test]
+fn strict_projection_preserves_references_and_fails_on_unresolvable_text() {
+    let scratch = Scratch::new();
+    let log = scratch.0.join("compressed.jsonl");
+    let mut source = Keybox::open(":memory:", &KEY).unwrap();
+    let scope = source.create_session().unwrap();
+    let first = source
+        .get_or_create(scope, SecretType::Credential, "opaque-fixture")
+        .unwrap();
+    let other = source.create_session().unwrap();
+    let foreign = source
+        .get_or_create(other, SecretType::Credential, "foreign-fixture")
+        .unwrap();
+    source.checkpoint(scope, &log).unwrap();
+    assert_eq!(
+        source.redact_model_text(
+            scope,
+            &format!("password=uncommitted-fixture {foreign}"),
+            Default::default()
+        ),
+        Err(Error::InvalidMarker)
+    );
+    assert_eq!(
+        source.restore_strict(scope, "truncated [[CONVO_SAFE:v1:{", 4096),
+        Err(Error::InvalidMarker)
+    );
+    assert_eq!(
+        source.restore_strict(scope, &first.replace("CREDENTIAL", "BANK_ACCOUNT"), 4096),
+        Err(Error::InvalidMarker)
+    );
+    assert_eq!(
+        source.restore_strict(scope, &first, 1),
+        Err(Error::OutputLimit)
+    );
+
+    let literal = source.redact(scope, "[[CONVO_SAFE:visible").unwrap();
+    let compressed = format!("Summary says use {first}; password=fresh-fixture; literal {literal}");
+    let redacted = source
+        .redact_model_text(scope, &compressed, Default::default())
+        .unwrap();
+    assert!(redacted.contains(&first));
+    assert!(!redacted.contains("fresh-fixture"));
+    assert_eq!(
+        Keybox::open_replay(&log, &KEY)
+            .unwrap()
+            .restore_strict(scope, &redacted, 4096),
+        Err(Error::InvalidMarker)
+    );
+    source.checkpoint(scope, &log).unwrap();
+    assert_eq!(
+        Keybox::open_replay(&log, &KEY)
+            .unwrap()
+            .restore_strict(scope, &redacted, 4096)
+            .unwrap(),
+        "Summary says use opaque-fixture; password=fresh-fixture; literal [[CONVO_SAFE:visible"
+    );
+    assert_eq!(
+        source
+            .redact_model_text(scope, &redacted, Default::default())
+            .unwrap(),
+        redacted
+    );
+}
+
+#[test]
+fn failed_fork_never_exposes_an_incomplete_sidecar() {
+    let scratch = Scratch::new();
+    let parent = scratch.0.join("parent.jsonl");
+    let child = scratch.0.join("child.jsonl");
+    let mut source = Keybox::open(":memory:", &KEY).unwrap();
+    let scope = source.create_session().unwrap();
+    let marker = source.redact(scope, "password=fixture-parent").unwrap();
+    source.checkpoint(scope, &parent).unwrap();
+
+    let parent_path = convo_safe::replay_path(&parent).unwrap();
+    let corruptible = rusqlite::Connection::open(parent_path).unwrap();
+    let replay = Keybox::open_replay(&parent, &KEY).unwrap();
+    corruptible
+        .execute("UPDATE entries SET kind = zeroblob(1)", [])
+        .unwrap();
+    assert!(replay.fork_replay(&child).is_err());
+    assert!(!convo_safe::replay_path(&child).unwrap().exists());
+    assert!(!fs::read_dir(&scratch.0).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".pending")
+    }));
+
+    corruptible
+        .execute("UPDATE entries SET kind = 'CREDENTIAL'", [])
+        .unwrap();
+    replay.fork_replay(&child).unwrap();
+    let resumed = Keybox::resume_replay(&child, &KEY).unwrap();
+    assert_eq!(
+        resumed.restore_strict(scope, &marker, 4096).unwrap(),
+        "password=fixture-parent"
+    );
+}

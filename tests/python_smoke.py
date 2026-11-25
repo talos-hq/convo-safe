@@ -128,6 +128,66 @@ def mock_reply(worker, session, case):
     )
 
 
+def test_long_compressed_resume():
+    """Keep a long model-visible prefix stable across compression and restart."""
+    with TemporaryDirectory() as scratch:
+        transcript = Path(scratch, "session.jsonl")
+        child_log = transcript.with_name("compressed.jsonl")
+        master = bytes(range(32))
+        source = Keybox(":memory:", master)
+        session = source.create_session()
+        original = "π" * 524_288 + " password=long-message-fixture"
+        projected = source.redact(session, original)
+        source.checkpoint(session, transcript)
+        del source
+        transcript.write_text(
+            json.dumps({"role": "user", "content": projected}, ensure_ascii=False)
+            + "\n",
+            encoding="utf-8",
+        )
+
+        saved = Keybox.resume_replay(transcript, master)
+        assert saved.replay_session == session
+        identity = saved.replay_identity
+        assert identity is not None
+        [marker] = re.findall(r"\[\[CONVO_SAFE:v1:\{[^}]+\}\]\]", projected)
+        summary = saved.redact_model_text(
+            session,
+            f"Keep {marker}; beneficiary: fixture@example.org",
+            redact_email=True,
+        )
+        assert marker in summary and "fixture@example.org" not in summary
+        saved.seal_replay()
+        saved.fork_replay(child_log)
+        child_log.write_text(
+            json.dumps({"role": "system", "content": summary}, ensure_ascii=False)
+            + "\n",
+            encoding="utf-8",
+        )
+        del saved
+
+        resumed = Keybox.resume_replay(child_log, master)
+        assert resumed.replay_identity == identity
+        compressed = json.loads(child_log.read_text(encoding="utf-8"))["content"]
+        assert compressed.encode() == summary.encode()
+        resumed.validate_references(session, compressed)
+        persisted = json.loads(transcript.read_text(encoding="utf-8"))["content"]
+        assert persisted.encode() == projected.encode()
+        assert resumed.redact_model_text(session, persisted) == persisted
+        assert (
+            resumed.restore_strict(session, persisted, len(original.encode()))
+            == original
+        )
+        assert resumed.restore_strict(session, compressed, 4096) == (
+            "Keep long-message-fixture; beneficiary: fixture@example.org"
+        )
+        assert "long-message-fixture" not in transcript.read_text(encoding="utf-8")
+        assert "password=resumed-fixture" not in resumed.redact(
+            session, "password=resumed-fixture"
+        )
+
+
 if __name__ == "__main__":
     main()
     test_chat_replay()
+    test_long_compressed_resume()

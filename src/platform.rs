@@ -27,3 +27,17 @@ pub fn has_private_permissions(metadata: &Metadata) -> bool {
 pub fn has_private_permissions(_: &Metadata) -> bool {
     true
 }
+
+#[cfg(unix)]
+pub fn sync_parent(path: &Path) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+pub fn sync_parent(_: &Path) -> io::Result<()> {
+    Ok(())
+}
