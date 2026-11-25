@@ -1,4 +1,4 @@
-use crate::SecretType;
+use crate::{RedactionOptions, SecretType};
 use regex::Regex;
 use std::{net::IpAddr, sync::LazyLock};
 
@@ -11,6 +11,11 @@ struct Rule {
 const SEP: &str = r"(?:[_-]|%5f)?";
 const PREFIXED_KEYS: &str = r"\b(?:sk-or-v1-[A-Fa-f0-9]{64}\b|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|npm_[A-Za-z0-9]{24,}|sk-(?:proj-|ant-api[0-9]+-|svcacct-)?[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16}\b|AIza[A-Za-z0-9_-]{35}\b)";
 const NAME: &str = r"(?:\p{Lu}\.|\p{Lu}[\p{L}\p{M}'’-]*)";
+
+// Horizontal separators only. A match must never cross a message line.
+const NUMBER_SEP: &str = r"[ \t\x{a0}\x{2009}\x{202f}\x{2010}\x{2011}-]";
+const PHONE_SEP: &str = r"[ .\t\x{a0}\x{2009}\x{202f}\x{2010}\x{2011}-]";
+const PHONE_EXT: &str = r"(?:;ext=|[ \t]*(?:x|ext(?:ension)?\.?)[ \t]*)[0-9]{1,6}";
 
 impl Rule {
     fn new(kind: SecretType, pattern: &str) -> Self {
@@ -89,14 +94,31 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             r"(?i)\b[a-z][a-z0-9+.-]*://[^\s:/@]+:(?P<secret>[^\s/@]+)@",
         ),
         Rule::new(
-            Email,
-            r"[\p{L}\p{M}0-9.!#$%&'*+?^_`{|}~-]+@(?:[\p{L}\p{M}0-9-]+\.)+[\p{L}\p{M}]{2,63}",
+            BankRouting,
+            r#"(?i)\b(?:aba(?:[ _-]*routing)?(?:[ _-]*number)?|(?:bank[ _-]*)?routing(?:[ _-]*transit)?[ _-]*(?:number|no\.?|#)?|rtn)["']?(?:[ \t]*[:=][ \t]*|[ \t]+(?:is[ \t]+)?|[ \t]*-[ \t]+)["']?(?P<secret>[0-9]{9})"#,
+        ),
+        Rule::new(
+            BankAccount,
+            &format!(
+                r#"(?i)\b(?:bank[ _-]*account(?:[ _-]*(?:number|no\.?|#))?|(?:checking|savings)[ _-]*account[ _-]*(?:number|no\.?|#))["']?(?:[ \t]*[:=][ \t]*|[ \t]+(?:is[ \t]+)?|[ \t]*-[ \t]+)["']?(?P<secret>[0-9](?:{NUMBER_SEP}?[0-9]){{7,16}})"#
+            ),
         ),
         Rule::new(Ssn, r"[0-9]{3}-[0-9]{2}-[0-9]{4}"),
-        Rule::new(CreditCard, r"[0-9](?:[ -]?[0-9]){12,18}"),
+        Rule::new(
+            CreditCard,
+            &format!(
+                r"(?:[0-9]{{4}}(?:{NUMBER_SEP}[0-9]{{4}}){{2,3}}(?:{NUMBER_SEP}[0-9]{{1,3}})?|[0-9]{{4}}{NUMBER_SEP}[0-9]{{6}}{NUMBER_SEP}[0-9]{{4,5}}|[0-9]{{12,19}})"
+            ),
+        ),
+        Rule::new(
+            CreditCard,
+            &format!(r"[0-9](?:{NUMBER_SEP}?[0-9]){{12,18}}"),
+        ),
         Rule::new(
             Phone,
-            r"(?:\+1[ .-]?)?(?:\([0-9]{3}\)[ .-]?|[0-9]{3}[ .-]?)[0-9]{3}[ .-]?[0-9]{4}",
+            &format!(
+                r"(?i)(?:(?:\+1{PHONE_SEP}?|1{PHONE_SEP}?)?(?:\([2-9][0-9]{{2}}\){PHONE_SEP}?|[2-9][0-9]{{2}}{PHONE_SEP}?)[0-9]{{3}}{PHONE_SEP}?[0-9]{{4}}|\+[2-9](?:{PHONE_SEP}?[0-9]){{7,14}})(?:{PHONE_EXT})?"
+            ),
         ),
         Rule::new(
             IpAddress,
@@ -164,6 +186,110 @@ fn identifier(c: char) -> bool {
 fn bounded(text: &str, start: usize, end: usize) -> bool {
     !text[..start].chars().next_back().is_some_and(identifier)
         && !text[end..].chars().next().is_some_and(identifier)
+}
+
+fn valid_routing(number: &str) -> bool {
+    let prefix = (number.as_bytes()[0] - b'0') * 10 + (number.as_bytes()[1] - b'0');
+    matches!(prefix, 0..=12 | 21..=32 | 61..=72 | 80)
+        && number != "000000000"
+        && number
+            .bytes()
+            .zip([3, 7, 1].into_iter().cycle())
+            .map(|(digit, weight)| u32::from(digit - b'0') * weight)
+            .sum::<u32>()
+            .is_multiple_of(10)
+}
+
+fn valid_email(text: &str, start: usize, end: usize, urls: &[Url]) -> bool {
+    let (local, domain) = text[start..end].split_once('@').expect("email candidate");
+    let domain_tail = &text[end..];
+    let preceding = &text[..start];
+    if local.len() > 64
+        || local.starts_with('.')
+        || local.ends_with('.')
+        || local.contains("..")
+        || preceding.ends_with('@')
+        || domain_tail.starts_with('@')
+        || (domain_tail.starts_with('.')
+            && domain_tail.trim_start_matches('.').starts_with(identifier))
+    {
+        return false;
+    }
+    let Some((_, tld)) = domain.rsplit_once('.') else {
+        return false;
+    };
+    let valid_tld = tld.chars().count() >= 2 && tld.chars().all(char::is_alphabetic)
+        || tld.to_ascii_lowercase().starts_with("xn--") && tld.len() > 4;
+    valid_tld
+        && domain.split('.').all(|label| {
+            label.chars().count() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && !label.contains('_')
+        })
+        && !url_at(urls, start)
+            .and_then(|url| url.userinfo_end)
+            .is_some_and(|at| start < at && at < end)
+}
+
+fn email_spans(text: &str, urls: &[Url]) -> Vec<(usize, usize)> {
+    static EMAIL: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"[\p{L}\p{M}0-9.!#$%&'*+/?^_\x60{|}~-]+@(?:[\p{L}\p{M}0-9_-]+\.)+[\p{L}\p{M}0-9_-]+",
+        )
+        .expect("static email pattern")
+    });
+    if !text.contains('@') {
+        return Vec::new();
+    }
+    EMAIL
+        .find_iter(text)
+        .filter_map(|candidate| {
+            let mut start = candidate.start();
+            let end = candidate.end();
+            if let Some(url) = url_at(urls, end - 1)
+                && start < url.start
+            {
+                // Slashes before the address in a URL belong to its authority or path.
+                let at = start + candidate.as_str().find('@').expect("email candidate");
+                start = url.start + text[url.start..at].rfind('/')? + 1;
+            }
+            (start < end && valid_email(text, start, end, urls)).then_some((start, end))
+        })
+        .collect()
+}
+
+fn inside_email(emails: &[(usize, usize)], start: usize, end: usize) -> bool {
+    let index = emails.partition_point(|(email_start, _)| *email_start <= start);
+    index > 0 && emails[index - 1].1 >= end
+}
+
+fn has_digit_continuation(tail: &str) -> bool {
+    tail.strip_prefix([
+        ' ', '\t', '\u{a0}', '\u{2009}', '\u{202f}', '\u{2010}', '\u{2011}', '-',
+    ])
+    .is_some_and(|tail| tail.starts_with(|c: char| c.is_ascii_digit()))
+}
+
+fn valid_match(
+    kind: SecretType,
+    text: &str,
+    start: usize,
+    end: usize,
+    indicators: &[usize],
+) -> bool {
+    use SecretType::*;
+    let value = &text[start..end];
+    match kind {
+        Credential | Bearer => !is_reference(value) && indicators.binary_search(&start).is_err(),
+        Phone => bounded(text, start, end) && !text[end..].starts_with('@'),
+        Ssn => bounded(text, start, end),
+        BankAccount => bounded(text, start, end) && !has_digit_continuation(&text[end..]),
+        BankRouting => bounded(text, start, end) && valid_routing(value),
+        CreditCard => bounded(text, start, end) && luhn(value),
+        IpAddress => valid_ip(text, start, end),
+        _ => true,
+    }
 }
 
 fn valid_ip(text: &str, start: usize, end: usize) -> bool {
@@ -271,11 +397,15 @@ fn yaml_secrets(text: &str, indicators: &mut Vec<usize>) -> Vec<(usize, usize, S
         .collect()
 }
 
-pub(crate) fn matches(text: &str) -> Vec<(usize, usize, SecretType)> {
+pub(crate) fn matches(text: &str, options: RedactionOptions) -> Vec<(usize, usize, SecretType)> {
     use SecretType::*;
     let urls = urls(text);
+    let emails = email_spans(text, &urls);
     let mut indicators = Vec::new();
     let mut found = yaml_secrets(text, &mut indicators);
+    if options.redact_email {
+        found.extend(emails.iter().map(|&(start, end)| (start, end, Email)));
+    }
     for rule in RULES.iter() {
         let mut next = 0;
         while let Some(captures) = rule.regex.captures_at(text, next) {
@@ -302,19 +432,13 @@ pub(crate) fn matches(text: &str) -> Vec<(usize, usize, SecretType)> {
             if value.is_empty() {
                 continue;
             }
-            let valid = match rule.kind {
-                Credential | Bearer => {
-                    !is_reference(value) && indicators.binary_search(&start).is_err()
-                }
-                Phone | Ssn => bounded(text, start, end),
-                CreditCard => bounded(text, start, end) && luhn(value),
-                IpAddress => valid_ip(text, start, end),
-                Email => !url_at(&urls, start)
-                    .and_then(|url| url.userinfo_end)
-                    .is_some_and(|at| start < at && at < end),
-                _ => true,
-            };
-            if valid {
+            let numeric = matches!(
+                rule.kind,
+                Phone | CreditCard | BankAccount | BankRouting | Ssn
+            );
+            if (!numeric || !inside_email(&emails, start, end))
+                && valid_match(rule.kind, text, start, end, &indicators)
+            {
                 found.push((start, end, rule.kind));
             }
         }

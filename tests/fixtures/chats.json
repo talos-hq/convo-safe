@@ -1,0 +1,14 @@
+[
+  {
+    "message": "Set up the sandbox ACH transfer. Routing number is 110000000, bank account number is 000123456789.",
+    "secrets": {"BANK_ROUTING": "110000000", "BANK_ACCOUNT": "000123456789"}
+  },
+  {
+    "message": "For the callback, use +1-202-555-0101;ext=72 or send a reply to name+tag@example.org.",
+    "secrets": {"PHONE": "+1-202-555-0101;ext=72", "EMAIL": "name+tag@example.org"}
+  },
+  {
+    "message": "Use the sandbox card 4242 4242 4242 4242 and confirm routing_number: 110000000.",
+    "secrets": {"CREDIT_CARD": "4242 4242 4242 4242", "BANK_ROUTING": "110000000"}
+  }
+]

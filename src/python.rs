@@ -1,4 +1,4 @@
-use crate::{Error, Keybox, SessionId};
+use crate::{Error, Keybox, RedactionOptions, SessionId};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     prelude::*,
@@ -60,8 +60,11 @@ impl PythonKeybox {
             .map_err(python_error)
     }
 
-    fn redact(&mut self, session: SessionId, text: &str) -> PyResult<String> {
-        self.0.redact(session, text).map_err(python_error)
+    #[pyo3(signature = (session, text, *, redact_email = false))]
+    fn redact(&mut self, session: SessionId, text: &str, redact_email: bool) -> PyResult<String> {
+        self.0
+            .redact_with_options(session, text, RedactionOptions { redact_email })
+            .map_err(python_error)
     }
 
     fn restore(&self, session: SessionId, text: &str) -> PyResult<String> {

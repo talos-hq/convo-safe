@@ -37,8 +37,15 @@ log grows and `box.finalize_replay(session, "turns.jsonl")` when the session
 ends. A trusted reader can load the sidecar using
 `Keybox.open_replay("turns.jsonl", master_key)`.
 
+Automatic email redaction is opt-in. Use
+`box.redact(session, prompt, redact_email=True)` to replace full email
+addresses. The default leaves email text available to your own fuzzy
+matching or masking rules. Explicit `get_or_create` mappings and replay work
+regardless of the detector setting.
+
 In Rust the same operations are available through `convo_safe::Keybox`
-and `convo_safe::SecretType`. Set `default-features = false` to embed the
+and `convo_safe::SecretType`. Use `Keybox::redact_with_options` with
+`RedactionOptions { redact_email: true }` to enable email detection. Set `default-features = false` to embed the
 library without the worker's JSON dependency.
 
 ## Local worker
@@ -64,6 +71,9 @@ marks the logical message complete.
 | `{"op":"chunk","session":1,"text":"4856"}` | `{"ok":true}` |
 | `{"op":"finish_message","session":1}` | `{"text":"Call ..."}` |
 | `{"op":"end_session","session":1}` | `{"ok":true}` |
+
+Use `"redact_email": true` in `create_session` to enable email
+detection for that worker session, including streamed messages.
 
 Send one stream at a time per session. Use `abort_message` to discard a
 partial message. An oversized chunk also discards the buffered message. Use `redact` with a complete `text` for one-shot use, or
@@ -101,14 +111,24 @@ Suggested model instruction:
 
 The scanner recognizes common provider tokens, private-key blocks, Basic and
 Bearer credentials, credential assignments, URL passwords and query values,
-and YAML secret scalars. It detects email, North American phone numbers,
-formatted SSNs, checksum-valid card numbers, IPv4 and IPv6, and common
-contextual forms for personal names and street addresses. These are local
-heuristics. Name and address patterns cover labels, honorifics, and
-recognizable street or PO box forms. Use `get_or_create` for sensitive values
-the caller already knows.
+and YAML secret scalars. It detects North American phone numbers, explicit
+international phone shapes, formatted SSNs, checksum-valid card numbers,
+IPv4 and IPv6, and common contextual forms for personal names and street
+addresses. Phone detections include common extension syntax. Labelled ABA
+routing numbers need a valid check digit. Bank and checking/savings account
+numbers need banking context. Email detection, when enabled, covers common
+dot-atom addresses, plus aliases, and internationalized labels.
 
-The PII categories follow [OpenRouter's documented guardrail presets](https://openrouter.ai/docs/guides/features/guardrails/sensitive-info/).
+OpenRouter's documented sensitive-info presets cover email, phone, SSN,
+credit card, IP address, secrets, person name, and address. Its preset and
+custom-regex filters can redact or block provider-bound text. The local
+scanner uses deterministic patterns and does not implement OpenRouter's
+hosted contextual NLP. The test corpus links the sample datasets and describes
+which cases are covered.
+[OpenRouter presets](https://openrouter.ai/docs/guides/features/guardrails/sensitive-info) ·
+[Secret formats](https://openrouter.ai/docs/guides/features/guardrails/secret-formats) ·
+[Fixture provenance](tests/fixtures/README.md)
+
 Scan each logical text field before putting it into the provider's request
 structure. This preserves JSON framing for messages or tool arguments.
 

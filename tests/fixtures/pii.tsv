@@ -1,0 +1,42 @@
+CREDIT_CARD	4242 4242 4242 4242	Pay with <{value}>.
+CREDIT_CARD	3782-822463-10005	Amex: {value}; status: demo
+CREDIT_CARD	3622 720627 1667	Diners Club: {value}.
+CREDIT_CARD	6205 5000 0000 0000 004	Sandbox card {value}.
+CREDIT_CARD	3056930009020004	Cards: [{value}].
+CREDIT_CARD	6205500000000000004	Card ({value}).
+KEEP	Failed Luhn: 6205500000000000005.
+KEEP	Twenty digit transaction: 62055000000000000042.
+KEEP	Oversized grouped number: 4242 4242 4242 4242 4242.
+KEEP	Embedded id=foo4242424242424242bar.
+BANK_ROUTING	110000000	Use {"routingNumber":"{value}"}
+BANK_ROUTING	110000000	ACH bank routing number is {value}.
+BANK_ROUTING	110000000	ABA: '{value}' is for testing.
+BANK_ROUTING	110000000	routing transit no. {value}; label preserved
+BANK_ACCOUNT	000123456789	Use {"bank_account_number":"{value}","flag":true}
+BANK_ACCOUNT	000111111113	checking account number is {value}.
+KEEP	Status: 110000000; orderId=000123456789.
+KEEP	routing_number: 110000001
+KEEP	routing_number: 000000000
+KEEP	routing number: 990000004
+KEEP	routing number: 1100000001
+KEEP	bank account number is 1234567
+PHONE	+44 20 7946 0958 x456	Call {value}, 45 days a year.
+PHONE	+1-202-555-0101;ext=72	See tel:{value}.
+PHONE	+1 (212) 555‑0102 ext. 9	Phone <{value}>.
+PHONE	1 202 555 0103	May I reach you at {value}?
+PHONE	202-555-0104	After 03/10/2011, call {value}.
+PHONE	202-555-0105	Call {value} extremely soon.
+KEEP	Timestamps 03/10/2011 and 08:31:59; HTTP v1.2.3.4.5.
+KEEP	A202-555-0101Z on order 20255501011.
+EMAIL	name.o'reilly+tag@example.net	Write to <{value}>.
+EMAIL	unicode.élève@bücher.example	Destination [{value}] 🚀.
+EMAIL	customer@shop.xn--p1ai	Reply to {value}.
+EMAIL	info+test_email@example.com	mailto:{value}?subject=hello
+KEEP	Bad: next..hop@example.org, user@-example.org, user@example-.org, user@example_domain.org.
+KEEP	Bad: user@.com, user@example.com..org, user@example.c, dup@user@example.org.
+CREDIT_CARD	4242424242424242	card=+{value}
+BANK_ACCOUNT	0001-2345-6789	Bank account number: {value}.
+BANK_ACCOUNT	0001 2345 6789	Bank account number: {value}.
+BANK_ROUTING	110000000	{"routing":"{value}"}
+EMAIL	dept/sales@example.org	Mail <{value}>.
+EMAIL	user@example.org	Visit https://example.net/contact/{value}.

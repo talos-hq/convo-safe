@@ -1,5 +1,5 @@
 use chacha20poly1305::aead::{OsRng, rand_core::RngCore};
-use convo_safe::{Keybox, SecretType, SessionId};
+use convo_safe::{Keybox, RedactionOptions, SecretType, SessionId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -22,6 +22,8 @@ const MAX_SESSIONS: usize = 256;
 enum Request {
     CreateSession {
         session_log: PathBuf,
+        #[serde(default)]
+        redact_email: bool,
     },
     GetOrCreate {
         session: SessionId,
@@ -71,6 +73,7 @@ impl Drop for Request {
 
 struct Active {
     log: PathBuf,
+    options: RedactionOptions,
     pending: Option<Zeroizing<String>>,
 }
 
@@ -109,7 +112,10 @@ impl Worker {
         }
 
         let session = match request {
-            Request::CreateSession { session_log } => {
+            Request::CreateSession {
+                session_log,
+                redact_email,
+            } => {
                 if self.active.len() >= MAX_SESSIONS {
                     return Err("too many open sessions".into());
                 }
@@ -121,6 +127,9 @@ impl Worker {
                     session,
                     Active {
                         log: session_log.clone(),
+                        options: RedactionOptions {
+                            redact_email: *redact_email,
+                        },
                         pending: None,
                     },
                 );
@@ -241,7 +250,9 @@ fn redact(
     state: &Active,
     text: &str,
 ) -> Result<Value, String> {
-    let redacted = keybox.redact(session, text).map_err(storage_error)?;
+    let redacted = keybox
+        .redact_with_options(session, text, state.options)
+        .map_err(storage_error)?;
     let reply = text_reply(redacted)?;
     keybox
         .checkpoint(session, &state.log)
