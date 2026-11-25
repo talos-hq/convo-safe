@@ -173,4 +173,5 @@ profile and synthetic credentials to exercise both successful and rejected
 provider requests. The test checks provider payloads and CLI output for raw
 synthetic addresses, then verifies that the provider error is recorded as a
 marker in the request dump and that profile text diagnostics omit the raw error
-address.
+address. It also inspects the SQLite admission queue and checks the database
+and its journal files for the synthetic addresses.
