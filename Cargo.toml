@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Reversible prompt redaction backed by a local encrypted Keybox"
 repository = "https://github.com/talos-hq/convo-safe"
+license-file = "LICENSE"
 
 [lib]
 name = "convo_safe"
