@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from convo_safe import Keybox, SecretType
+from convo_safe.replay import ReplayBindingError, open_bound_replay, replay_binding
 
 
 def main():
@@ -187,7 +188,32 @@ def test_long_compressed_resume():
         )
 
 
+def test_bound_replay():
+    """Bind a saved scope to an exact sidecar even before sibling content diverges."""
+    with TemporaryDirectory() as scratch:
+        log = Path(scratch, "parent.jsonl")
+        sibling = log.with_name("sibling.jsonl")
+        master = bytes(range(32))
+        source = Keybox(":memory:", master)
+        scope = source.create_session()
+        projected = source.redact(scope, "password=bound-fixture")
+        source.checkpoint(scope, log)
+        box = Keybox.open_replay(log, master)
+        binding = replay_binding(box)
+        box.fork_replay(sibling)
+        Keybox.open_replay(sibling, master).validate_references(scope, projected)
+        assert open_bound_replay(log, master, binding).replay_session == scope
+        for path, expected in ((sibling, binding), (log, None), (log, {})):
+            try:
+                open_bound_replay(path, master, expected, writable=True)
+            except ReplayBindingError:
+                pass
+            else:
+                raise AssertionError("accepted an invalid replay binding")
+
+
 if __name__ == "__main__":
     main()
     test_chat_replay()
     test_long_compressed_resume()
+    test_bound_replay()

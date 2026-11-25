@@ -60,6 +60,9 @@ plugin and add only the enforcement and persistence contracts to Hermes core.
    session ID together with the authenticated lineage `replay_identity` and
    the fork-specific `replay_sidecar_id` in Hermes's durable session metadata.
    Require both identities for a protected session before consuming history.
+   Use `convo_safe.replay.replay_binding` when saving the session and
+   `open_bound_replay` with the saved binding when reopening it. A missing
+   binding or a different sidecar stops protected resume.
    Existing sidecars without a branch identity can be copied into a new
    identified sidecar with `fork_replay`; publish the new path and ID together.
    Bind the
