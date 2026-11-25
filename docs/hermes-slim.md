@@ -183,6 +183,11 @@ drill copies the closed profile to a new directory, resumes its compressed
 history, and verifies that missing or incorrect master keys and missing,
 swapped, or corrupt Keybox files block resume.
 
+The compression phase also settles a turn whose admission belongs to the
+parent and whose reply includes a marker created by the child. The stored
+outcome must preserve that marker and restore its exact value with the child's
+Keybox.
+
 Run `tests/hermes_cli_loopback.py` against a Hermes checkout with the protected
 CLI entry point. It creates and resumes a protected session through the CLI
 and inspects each request sent to a local fixture provider. It uses a separate

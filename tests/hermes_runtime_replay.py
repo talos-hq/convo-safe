@@ -21,6 +21,8 @@ from hermes_replay import (
     run_isolated_phases,
 )
 
+SETTLED_EMAIL = "settled-child@example.org"
+
 
 def write_parent(db):
     """Initialize and persist an unprojected long user turn through Hermes."""
@@ -51,6 +53,7 @@ def compress_parent(db):
     )
     assert payload["messages"][0]["content"] == projected
     assert EMAIL not in payload["instructions"]
+    claim = claim_parent_turn(db)
     summary = summarize_for_rotation(db, projected)
     holder = f"conformance:pid={os.getpid()}"
     assert db.try_acquire_compression_lock("parent", holder)
@@ -61,6 +64,44 @@ def compress_parent(db):
         protected_child_config(db, "parent", "child", {}),
         system_prompt=payload["instructions"],
     )
+    check_child_settlement(db, claim, session_request_keybox(db, "child"))
+
+
+def claim_parent_turn(db):
+    """Make the admission owner differ from the eventual result's session."""
+    import hermes_state_runtime as runtime  # pylint: disable=import-error,import-outside-toplevel
+
+    epoch = runtime.begin_runtime_epoch(db, instance_id="conformance")
+    runtime.admit_session_input(
+        db,
+        epoch=epoch,
+        principal_id="fixture",
+        session_id="parent",
+        request_id="continue",
+        payload={"text": "Continue"},
+    )
+    return epoch, runtime.claim_session_input(db, epoch=epoch, session_id="parent")
+
+
+def check_child_settlement(db, claim, box):
+    """Persist a response containing a marker minted after the child fork."""
+    import hermes_state_runtime as runtime  # pylint: disable=import-error,import-outside-toplevel
+    from gateway.session_results import admission_result  # pylint: disable=import-error,import-outside-toplevel
+
+    epoch, row = claim
+    marker = box.redact_model_text(box.replay_session, SETTLED_EMAIL, redact_email=True)
+    assert marker != SETTLED_EMAIL
+    runtime.settle_session_input(
+        db,
+        epoch=epoch,
+        admission_id=row["admission_id"],
+        generation=row["generation"],
+        outcome="completed",
+        result={"result": {"session_id": "child", "final_response": marker}},
+    )
+    saved = admission_result(db, row["admission_id"])
+    assert saved["result"]["final_response"] == marker
+    assert box.restore_strict(box.replay_session, marker, 1024) == SETTLED_EMAIL
 
 
 def summarize_for_rotation(db, projected):
@@ -132,6 +173,7 @@ def recover_offline(root):
     for path in root.glob("*state.db*"):
         assert PASSWORD.encode() not in path.read_bytes()
         assert EMAIL.encode() not in path.read_bytes()
+        assert SETTLED_EMAIL.encode() not in path.read_bytes()
 
 
 PHASES = {"write": write_parent, "compress": compress_parent, "resume": resume_child}
