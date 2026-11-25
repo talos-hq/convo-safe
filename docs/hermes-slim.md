@@ -57,8 +57,12 @@ plugin and add only the enforcement and persistence contracts to Hermes core.
    read-only. Use `fork_replay(new_log)` and resume the new sidecar to continue
    an archive or create a compression child.
 3. Store the logical conversation ID, sidecar path and owning numeric
-   session ID together with the authenticated lineage identity in Hermes's
-   durable session metadata. Bind the
+   session ID together with the authenticated lineage `replay_identity` and
+   the fork-specific `replay_sidecar_id` in Hermes's durable session metadata.
+   Require both identities for a protected session before consuming history.
+   Existing sidecars without a branch identity can be copied into a new
+   identified sidecar with `fork_replay`; publish the new path and ID together.
+   Bind the
    transcript revision to that metadata and reject an unexpected generation.
    Publish the sidecar before changing the active pointer. Reconcile a crash
    by reopening the last committed revision. Keep parent and child as one

@@ -260,6 +260,7 @@ pub struct Keybox {
     db: Connection,
     keys: Keys,
     replay_session: Option<SessionId>,
+    replay_sidecar_id: Option<blake3::Hash>,
 }
 
 impl Keybox {
@@ -300,6 +301,7 @@ impl Keybox {
             db,
             keys,
             replay_session: None,
+            replay_sidecar_id: None,
         })
     }
 
