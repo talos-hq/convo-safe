@@ -43,20 +43,50 @@ def compress_parent(root, db):
     assert marker in summary and EMAIL not in summary
     parent.fork_replay(root / "child.jsonl")
     parent.fork_replay(root / "sibling.jsonl")
+    child = Keybox.open_replay(root / "child.jsonl", MASTER)
+    binding = {
+        "lineage": child.replay_identity,
+        "sidecar": child.replay_sidecar_id,
+    }
+    assert all(binding.values())
+    assert_stale_lease_keeps_parent(db, parent, projected, summary, binding)
     db.publish_compression_child(
         parent_session_id="parent",
         child_session_id="child",
         source="conformance",
         messages=[{"role": "user", "content": summary}],
+        model_config={"replay_binding": binding},
         compression_lock_holder=holder,
-    )
-    child = Keybox.open_replay(root / "child.jsonl", MASTER)
-    assert child.replay_sidecar_id
-    db.patch_session_model_config(
-        "child", {"replay_sidecar_id": child.replay_sidecar_id}
     )
     parent.seal_replay()
     (root / "expected-summary.txt").write_text(summary, encoding="utf-8")
+
+
+def assert_stale_lease_keeps_parent(db, parent, projected, summary, binding):
+    """A rejected publish must leave the parent active and its sidecar writable."""
+    from hermes_state_errors import (  # pylint: disable=import-error,import-outside-toplevel
+        CompressionSessionBusyError,
+    )
+
+    try:
+        db.publish_compression_child(
+            parent_session_id="parent",
+            child_session_id="child",
+            source="conformance",
+            messages=[{"role": "user", "content": summary}],
+            model_config={"replay_binding": binding},
+            compression_lock_holder="stale-holder",
+        )
+    except CompressionSessionBusyError:
+        pass
+    else:
+        raise AssertionError("compression publication accepted a stale lease")
+    assert db.resolve_resume_session_id("parent") == "parent"
+    assert db.get_session("child") is None
+    assert db.get_messages("parent")[0]["content"] == projected
+    assert "orphan-fixture" not in parent.redact(
+        parent.replay_session, "password=orphan-fixture"
+    )
 
 
 def resume_child(root, db):
@@ -66,10 +96,13 @@ def resume_child(root, db):
     child = Keybox.resume_replay(root / "child.jsonl", MASTER)
     scope = child.replay_session
     summary = db.get_messages(tip)[0]["content"]
-    expected_id = db.get_session_model_config_value(tip, "replay_sidecar_id")
-    assert expected_id and child.replay_sidecar_id == expected_id
+    binding = db.get_session_model_config_value(tip, "replay_binding")
+    assert binding == {
+        "lineage": child.replay_identity,
+        "sidecar": child.replay_sidecar_id,
+    }
     sibling = Keybox.open_replay(root / "sibling.jsonl", MASTER)
-    assert sibling.replay_sidecar_id != expected_id
+    assert sibling.replay_sidecar_id != binding["sidecar"]
     assert sibling.replay_identity == child.replay_identity
     sibling.validate_references(scope, summary)
     projected = db.get_messages("parent")[0]["content"]
