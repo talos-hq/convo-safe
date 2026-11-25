@@ -1,5 +1,6 @@
-use convo_safe::{Keybox, SecretType};
+use convo_safe::{Keybox, RedactionOptions, SecretType};
 
+const EMAIL: RedactionOptions = RedactionOptions { redact_email: true };
 const KEY: [u8; 32] = [48; 32];
 
 fn check_spans(prefix: &str, cases: &[(&str, SecretType)], separator: &str, suffix: &str) {
@@ -7,7 +8,7 @@ fn check_spans(prefix: &str, cases: &[(&str, SecretType)], separator: &str, suff
     let session = keybox.create_session().unwrap();
     let values: Vec<_> = cases.iter().map(|(value, _)| *value).collect();
     let prompt = format!("{prefix}{}{suffix}", values.join(separator));
-    let redacted = keybox.redact(session, &prompt).unwrap();
+    let redacted = keybox.redact_with_options(session, &prompt, EMAIL).unwrap();
     let markers: Vec<_> = cases
         .iter()
         .map(|(value, kind)| keybox.get_or_create(session, *kind, value).unwrap())
@@ -151,7 +152,58 @@ fn handles_dense_comma_separated_email_lists() {
     let marker = keybox
         .get_or_create(session, SecretType::Email, email)
         .unwrap();
-    let redacted = keybox.redact(session, &prompt).unwrap();
+    let redacted = keybox.redact_with_options(session, &prompt, EMAIL).unwrap();
     assert_eq!(redacted.matches(&marker).count(), 10_000);
     assert_eq!(keybox.restore(session, &redacted).unwrap(), prompt);
+}
+
+#[test]
+fn leaves_email_visible_by_default() {
+    let mut keybox = Keybox::open(":memory:", &KEY).unwrap();
+    let session = keybox.create_session().unwrap();
+    for email in ["fuzzy.match@example.org", "202-555-0101.ops@example.net"] {
+        assert_eq!(keybox.redact(session, email).unwrap(), email);
+    }
+}
+
+#[test]
+fn recognizes_labelled_routing_number() {
+    let mut keybox = Keybox::open(":memory:", &KEY).unwrap();
+    let session = keybox.create_session().unwrap();
+    let output = keybox.redact(session, "routing_number: 110000000").unwrap();
+    assert!(output.contains("BANK_ROUTING"));
+    assert!(!output.contains("110000000"));
+}
+
+#[test]
+fn round_trips_the_attributed_pii_fixture_corpus() {
+    let mut keybox = Keybox::open(":memory:", &KEY).unwrap();
+    let session = keybox.create_session().unwrap();
+    for (line_number, line) in include_str!("fixtures/pii.tsv").lines().enumerate() {
+        let fields: Vec<_> = line.split('\t').collect();
+        match fields.as_slice() {
+            ["KEEP", text] => assert_eq!(
+                keybox.redact_with_options(session, text, EMAIL).unwrap(),
+                *text,
+                "fixture line {}",
+                line_number + 1
+            ),
+            [kind, value, template] => {
+                let original = template.replace("{value}", value);
+                let kind: SecretType = kind.parse().unwrap();
+                let actual = keybox
+                    .redact_with_options(session, &original, EMAIL)
+                    .unwrap();
+                let marker = keybox.get_or_create(session, kind, value).unwrap();
+                assert_eq!(
+                    actual,
+                    template.replace("{value}", &marker),
+                    "fixture line {}",
+                    line_number + 1
+                );
+                assert_eq!(keybox.restore(session, &actual).unwrap(), original);
+            }
+            _ => panic!("malformed fixture line {}", line_number + 1),
+        }
+    }
 }

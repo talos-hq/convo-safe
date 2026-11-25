@@ -366,7 +366,11 @@ fn appends_only_new_mappings_to_a_single_session_mirror_and_seals() {
          CREATE TRIGGER append_only_delete BEFORE DELETE ON entries BEGIN SELECT RAISE(ABORT, 'append only'); END;",
     ).unwrap();
     let later = source
-        .redact(session, "Another email fixture@example.org")
+        .redact_with_options(
+            session,
+            "Another email fixture@example.org",
+            convo_safe::RedactionOptions { redact_email: true },
+        )
         .unwrap();
     source.finalize_replay(session, &log).unwrap();
     source.finalize_replay(session, &log).unwrap();

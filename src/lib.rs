@@ -31,6 +31,13 @@ static MARKER: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 pub type SessionId = i64;
+
+/// Options for automatic detection. Explicit mappings and replay are independent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RedactionOptions {
+    /// Replace detected email addresses as complete, reversible spans.
+    pub redact_email: bool,
+}
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -43,6 +50,8 @@ pub enum SecretType {
     Email,
     Ssn,
     CreditCard,
+    BankRouting,
+    BankAccount,
     IpAddress,
     PersonName,
     Address,
@@ -58,6 +67,8 @@ impl SecretType {
             Self::Email => "EMAIL",
             Self::Ssn => "SSN",
             Self::CreditCard => "CREDIT_CARD",
+            Self::BankRouting => "BANK_ROUTING",
+            Self::BankAccount => "BANK_ACCOUNT",
             Self::IpAddress => "IP_ADDRESS",
             Self::PersonName => "PERSON_NAME",
             Self::Address => "ADDRESS",
@@ -77,6 +88,8 @@ impl FromStr for SecretType {
             "EMAIL" => Ok(Self::Email),
             "SSN" => Ok(Self::Ssn),
             "CREDIT_CARD" => Ok(Self::CreditCard),
+            "BANK_ROUTING" => Ok(Self::BankRouting),
+            "BANK_ACCOUNT" => Ok(Self::BankAccount),
             "IP_ADDRESS" => Ok(Self::IpAddress),
             "PERSON_NAME" => Ok(Self::PersonName),
             "ADDRESS" => Ok(Self::Address),
@@ -312,7 +325,17 @@ impl Keybox {
 
     /// Replace recognized secrets. A failed storage operation produces no prompt output.
     pub fn redact(&mut self, session: SessionId, input: &str) -> Result<String> {
-        let matches = scanner::matches(input);
+        self.redact_with_options(session, input, RedactionOptions::default())
+    }
+
+    /// Replace recognized secrets using caller-selected detectors.
+    pub fn redact_with_options(
+        &mut self,
+        session: SessionId,
+        input: &str,
+        options: RedactionOptions,
+    ) -> Result<String> {
+        let matches = scanner::matches(input, options);
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
