@@ -308,10 +308,34 @@ fn valid_ip(text: &str, start: usize, end: usize) -> bool {
                     .and_then(|s| s.as_bytes().first())
                     .is_some_and(u8::is_ascii_digit)
             };
-            zone.is_none() && !text[..start].ends_with('.') && !extension(&text[end..])
+            zone.is_none()
+                && !text[..start].ends_with('.')
+                && !extension(&text[end..])
+                && !version_context(&text[..start])
         }
         Err(_) => false,
     }
+}
+
+/// A dotted quad that reads as a version (`v1.2.3.4`, `pkg==2.2.3.3`, `version 10.0.0.1`).
+fn version_context(before: &str) -> bool {
+    const SIGILS: [&str; 7] = ["v", "V", "==", ">=", "<=", "~=", "@"];
+    const WORDS: [&str; 4] = ["version", "release", "ver", "tag"];
+    if SIGILS.iter().any(|sigil| before.ends_with(sigil)) {
+        return true;
+    }
+    let word = before.trim_end_matches([' ', '\t', ':', '=', '"', '\'']);
+    if word.len() == before.len() {
+        return false;
+    }
+    let lower = word.to_ascii_lowercase();
+    WORDS.iter().any(|w| {
+        lower.ends_with(w)
+            && lower[..lower.len() - w.len()]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric())
+    })
 }
 
 struct Url {

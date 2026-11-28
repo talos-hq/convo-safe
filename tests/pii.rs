@@ -75,6 +75,34 @@ fn identifies_ipv4_and_ipv6_without_consuming_delimiters() {
 }
 
 #[test]
+fn dotted_versions_are_not_ip_addresses() {
+    let mut keybox = Keybox::open(":memory:", &KEY).unwrap();
+    let session = keybox.create_session().unwrap();
+    for text in [
+        "version 2.2.3.3 released",
+        "Version: 1.2.3.4",
+        "pip install pkg==10.0.0.1",
+        "pin pkg>=4.4.4.4 now",
+        "tag v1.2.3.4 pushed",
+        "uses: org/action@1.2.3.4",
+        r#"{"version":"2.2.3.3"}"#,
+        "release 3.3.12.1 shipped",
+    ] {
+        assert_eq!(keybox.redact(session, text).unwrap(), text, "{text}");
+    }
+    for text in [
+        "host 139.0.0.0 down",
+        "ssh 10.0.0.1",
+        "server: 192.168.1.5",
+        "subversion 10.0.0.1",
+        "version 2.2.3.3 on host 192.0.2.21",
+    ] {
+        let redacted = keybox.redact(session, text).unwrap();
+        assert!(redacted.contains("IP_ADDRESS"), "{text} -> {redacted}");
+    }
+}
+
+#[test]
 fn recognizes_contextual_name_and_address_fields() {
     use SecretType::{Address, PersonName};
 
